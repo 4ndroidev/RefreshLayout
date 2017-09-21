@@ -30,11 +30,11 @@ public class RefreshLayout extends FrameLayout {
 
     private int mFrom;
     private int mTouchSlop;
-    private int mTotalOffset;
     private int mHeaderHeight;
     private int mRefreshThreshold;
     private int mActivePointerId = MotionEvent.INVALID_POINTER_ID;
 
+    private int mTotalOffset;
     private float mLastMotionX;
     private float mLastMotionY;
 
@@ -165,6 +165,7 @@ public class RefreshLayout extends FrameLayout {
 
     private boolean handleDownEvent(MotionEvent ev) {
         resetMember();
+        isHandler = true;
         mActivePointerId = ev.getPointerId(0);
         int pointerIndex = ev.findPointerIndex(mActivePointerId);
         if (pointerIndex < 0) return false;
@@ -181,62 +182,81 @@ public class RefreshLayout extends FrameLayout {
         float y = ev.getY(pointerIndex);
         float xDiff = x - mLastMotionX;
         float yDiff = y - mLastMotionY;
+        boolean canScrollUp = mContent.canScrollVertically(DIRECTION_NEGATIVE);
+
+        if (!isBeingDragged) {
+            isBeingDragged = Math.abs(xDiff) < Math.abs(yDiff) && Math.abs(yDiff) >= mTouchSlop;
+        }
 
         if (yDiff < 0) { // 上拉
             if (mTotalOffset > 0) {
-                offsetChildren((int) (yDiff / DRAGGING_RESISTANCE));
+                isBeingDragged = true;
+                int offset = (int) yDiff;
+                int targetOffset = mTotalOffset + offset;
+                if (targetOffset < 0) {
+                    offsetChildren(-mTotalOffset);
+                    mContent.scrollBy(0, -targetOffset);
+                } else {
+                    offsetChildren(offset);
+                }
                 mLastMotionX = x;
                 mLastMotionY = y;
                 return true;
             } else {
                 mLastMotionX = x;
                 mLastMotionY = y;
-                MotionEvent down = MotionEvent.obtain(
-                        ev.getDownTime(),
-                        ev.getEventTime(),
-                        MotionEvent.ACTION_DOWN,
-                        x,
-                        y + mTouchSlop,
-                        ev.getMetaState()
-                );
-                super.dispatchTouchEvent(down);
-                down.recycle();
-                super.dispatchTouchEvent(ev);
-                return true;
-            }
-        } else { // 下拉
-            boolean canScrollUp = mContent != null && mContent.canScrollVertically(DIRECTION_NEGATIVE);
-            if (!canScrollUp) { //子组件不能向上滚动
                 if (isBeingDragged) {
-                    offsetChildren((int) (yDiff / DRAGGING_RESISTANCE));
-                    mLastMotionX = ev.getX(pointerIndex);
-                    mLastMotionY = ev.getY(pointerIndex);
-                    return true;
-                } else if (mTotalOffset == 0) {
-                    if (yDiff < mTouchSlop || Math.abs(xDiff) > yDiff) return false;
-                    offsetChildren((int) (mTouchSlop / DRAGGING_RESISTANCE));
-                    isBeingDragged = true;
-                    mLastMotionX = ev.getX(pointerIndex);
-                    mLastMotionY = ev.getY(pointerIndex);
-                    return true;
-                }
-            } else { // 子组件向上滚动
-                mLastMotionX = x;
-                mLastMotionY = y;
-                if (!isBeingDragged) { // 交给子组件处理手势
+                    isBeingDragged = false;
                     MotionEvent down = MotionEvent.obtain(
                             ev.getDownTime(),
                             ev.getEventTime(),
                             MotionEvent.ACTION_DOWN,
                             x,
-                            y - mTouchSlop,
+                            y + mTouchSlop,
                             ev.getMetaState()
                     );
                     super.dispatchTouchEvent(down);
                     down.recycle();
-                    isBeingDragged = true;
                     super.dispatchTouchEvent(ev);
                     return true;
+                }
+            }
+        } else { // 下拉
+            if (!canScrollUp) { //子组件不能向上滚动
+                if (isBeingDragged) {
+                    if (!isHandler || mTotalOffset != 0) {
+                        int offset = (int) (yDiff / DRAGGING_RESISTANCE);
+                        if (!isHandler) {
+                            isHandler = true;
+                            offset = Math.max(offset, 1);
+                        }
+                        offsetChildren(offset);
+                    } else {
+                        offsetChildren((int) (mTouchSlop / DRAGGING_RESISTANCE));
+                    }
+                    mLastMotionX = x;
+                    mLastMotionY = y;
+                    return true;
+                }
+            } else {
+                if (isBeingDragged) {
+                    mLastMotionX = x;
+                    mLastMotionY = y;
+                    if (isHandler) { // 交给子组件处理
+                        isHandler = false;
+                        MotionEvent down = MotionEvent.obtain(
+                                ev.getDownTime(),
+                                ev.getEventTime(),
+                                MotionEvent.ACTION_DOWN,
+                                x,
+                                y - mTouchSlop,
+                                ev.getMetaState()
+                        );
+                        super.dispatchTouchEvent(down);
+                        down.recycle();
+                        super.dispatchTouchEvent(ev);
+                        return true;
+                    }
                 }
             }
         }
@@ -445,7 +465,7 @@ public class RefreshLayout extends FrameLayout {
 
     public void setRefreshing(final boolean refreshing) {
         if (!isRefreshing && refreshing) {
-            animateOffsetToRefreshPosition(mTotalOffset);
+            animateOffsetToRefreshPosition((int) mTotalOffset);
             isRefreshing = true;
             if (mUIHandler != null) mUIHandler.onStart();
         } else if (isRefreshing && !refreshing) {
@@ -453,7 +473,7 @@ public class RefreshLayout extends FrameLayout {
             postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    if (!isBeingDragged) animateOffsetToStartPosition(mTotalOffset);
+                    if (!isBeingDragged) animateOffsetToStartPosition((int) mTotalOffset);
                     isRefreshing = false;
                 }
             }, 500);
