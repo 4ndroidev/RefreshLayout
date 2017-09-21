@@ -80,6 +80,37 @@ public class RefreshLayout extends ViewGroup {
         mAnimateToRefreshPosition.setInterpolator(mDecelerateInterpolator);
     }
 
+    @Override
+    protected void onFinishInflate() {
+        final int childCount = getChildCount();
+        if (childCount == 2) {
+            if (mContent == null || mHeader == null) {
+                View child1 = getChildAt(0);
+                View child2 = getChildAt(1);
+                if (child1 instanceof RefreshUIHandler) {
+                    mHeader = child1;
+                    mContent = child2;
+                    setUIHandler((RefreshUIHandler) mHeader);
+                } else if (child2 instanceof RefreshUIHandler) {
+                    mHeader = child2;
+                    mContent = child1;
+
+                } else {
+                    if (mContent == null && mHeader == null) {
+                        mHeader = child1;
+                        mContent = child2;
+                    } else {
+                        if (mHeader == null) {
+                            mHeader = mContent == child1 ? child2 : child1;
+                        } else {
+                            mContent = mHeader == child1 ? child2 : child1;
+                        }
+                    }
+                }
+            }
+        }
+        super.onFinishInflate();
+    }
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
