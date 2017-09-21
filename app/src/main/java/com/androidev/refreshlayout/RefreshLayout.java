@@ -7,25 +7,26 @@ import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.ViewGroup;
 import android.view.animation.Animation;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.Interpolator;
 import android.view.animation.Transformation;
-import android.widget.AbsListView;
+import android.widget.FrameLayout;
 
 /**
  * refer to {@link android.support.v4.widget.SwipeRefreshLayout}
  */
 
-public class RefreshLayout extends ViewGroup {
+public class RefreshLayout extends FrameLayout {
 
     private static final float DRAGGING_RESISTANCE = 2f;
     private static final float DECELERATE_INTERPOLATION_FACTOR = 2f;
     private static final float RATIO_OF_HEADER_HEIGHT_TO_REFRESH = 1.2f;
+    private static final int DIRECTION_POSITIVE = 1;
+    private static final int DIRECTION_NEGATIVE = -1;
 
-    private View mContent;
     private View mHeader;
+    private View mContent;
 
     private int mFrom;
     private int mTouchSlop;
@@ -40,6 +41,7 @@ public class RefreshLayout extends ViewGroup {
     private boolean canRefresh;
     private boolean isRefreshing;
     private boolean isBeingDragged;
+    private boolean isHandler;
 
     private OnRefreshListener mListener;
     private RefreshUIHandler mUIHandler;
@@ -124,160 +126,210 @@ public class RefreshLayout extends ViewGroup {
 
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
-        updateLayout();
-    }
-
-    private void updateLayout() {
-        int paddingLeft = getPaddingLeft();
-        int paddingTop = getPaddingTop();
+        int left = getPaddingLeft();
+        int top = getPaddingTop() + mTotalOffset;
         if (mHeader != null) {
-            int left = paddingLeft;
-            int top = mTotalOffset + paddingTop - mHeaderHeight;
-            int right = left + mHeader.getMeasuredWidth();
-            int bottom = top + mHeaderHeight;
-            mHeader.layout(left, top, right, bottom);
+            mHeader.layout(left, top - mHeaderHeight, left + mHeader.getMeasuredWidth(), top);
         }
         if (mContent != null) {
-            int left = paddingLeft;
-            int top = mTotalOffset + paddingTop;
-            int right = left + mContent.getMeasuredWidth();
-            int bottom = top + mContent.getMeasuredHeight();
-            mContent.layout(left, top, right, bottom);
+            mContent.layout(left, top, left + mContent.getMeasuredWidth(), top + mContent.getMeasuredHeight());
         }
+    }
+
+    private void resetMember() {
+        isHandler = false;
+        mLastMotionX = 0;
+        mLastMotionY = 0;
+        isBeingDragged = false;
+        mActivePointerId = MotionEvent.INVALID_POINTER_ID;
     }
 
     @Override
-    public boolean onInterceptTouchEvent(MotionEvent ev) {
-        if (!isEnabled() || mContent == null || mHeader == null || canChildScrollUp())
-            return false;
-        final int action = MotionEventCompat.getActionMasked(ev);
-        int pointerIndex;
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        int action = ev.getActionMasked();
         switch (action) {
+
             case MotionEvent.ACTION_DOWN:
-                mActivePointerId = ev.getPointerId(0);
-                isBeingDragged = false;
-                canRefresh = !isRefreshing;
-                pointerIndex = ev.findPointerIndex(mActivePointerId);
-                if (pointerIndex < 0) {
-                    return false;
-                }
-                mLastMotionX = ev.getX(pointerIndex);
-                mLastMotionY = ev.getY(pointerIndex);
-                break;
+                return handleDownEvent(ev);
+
             case MotionEvent.ACTION_MOVE:
-                if (mActivePointerId == MotionEvent.INVALID_POINTER_ID) {
-                    return false;
-                }
-                pointerIndex = ev.findPointerIndex(mActivePointerId);
-                if (pointerIndex < 0) {
-                    return false;
-                }
-                final float x = ev.getX(pointerIndex);
-                final float y = ev.getY(pointerIndex);
-                startDragging(x, y);
+                handleMoveEvent(ev);
                 break;
 
-            case MotionEventCompat.ACTION_POINTER_UP:
-                onSecondaryPointerUp(ev);
-                break;
-
-            case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
-                isBeingDragged = false;
-                mActivePointerId = MotionEvent.INVALID_POINTER_ID;
+            case MotionEvent.ACTION_UP:
                 break;
         }
-        return isBeingDragged;
+        return super.dispatchTouchEvent(ev);
     }
 
-    public boolean onTouchEvent(MotionEvent ev) {
-        if (!isEnabled() || mContent == null || mHeader == null)
-            return false;
-        final int action = MotionEventCompat.getActionMasked(ev);
-        int pointerIndex;
-        switch (action) {
-            case MotionEvent.ACTION_DOWN:
-                mActivePointerId = ev.getPointerId(0);
-                isBeingDragged = false;
-                break;
-            case MotionEvent.ACTION_MOVE: {
-                pointerIndex = ev.findPointerIndex(mActivePointerId);
-                if (pointerIndex < 0) {
-                    return false;
-                }
-                final float x = ev.getX(pointerIndex);
-                final float y = ev.getY(pointerIndex);
-                startDragging(x, y);
-                if (isBeingDragged) {
-                    final int offset = (int) ((y - mLastMotionY) / DRAGGING_RESISTANCE);
-                    final int targetOffset = mTotalOffset + offset;
-                    if (canRefresh && !isRefreshing && mUIHandler != null)
-                        mUIHandler.onPull(targetOffset >= mRefreshThreshold, targetOffset);
-                    mLastMotionY = y;
-                    if (targetOffset >= 0) {
-                        setOffsetTopAndBottom(offset);
-                    } else {
-                        setOffsetTopAndBottom(-mTotalOffset);
-                        return false;
-                    }
-                }
-                break;
-            }
-            case MotionEventCompat.ACTION_POINTER_DOWN: {
-                pointerIndex = MotionEventCompat.getActionIndex(ev);
-                if (pointerIndex < 0) {
-                    return false;
-                }
-                mActivePointerId = ev.getPointerId(pointerIndex);
-                mLastMotionY = ev.getY(pointerIndex);
-                mLastMotionX = ev.getX(pointerIndex);
-                break;
-            }
-
-            case MotionEventCompat.ACTION_POINTER_UP:
-                onSecondaryPointerUp(ev);
-                break;
-
-            case MotionEvent.ACTION_UP: {
-                pointerIndex = ev.findPointerIndex(mActivePointerId);
-                if (pointerIndex < 0) {
-                    return false;
-                }
-                if (isBeingDragged) {
-                    isBeingDragged = false;
-                    if (isRefreshing) {
-                        if (mTotalOffset > mHeaderHeight)
-                            animateOffsetToRefreshPosition(mTotalOffset);
-                    } else {
-                        if (canRefresh && mTotalOffset >= mRefreshThreshold) {
-                            animateOffsetToRefreshPosition(mTotalOffset);
-                            isRefreshing = true;
-                            if (mListener != null) mListener.onRefresh();
-                            if (mUIHandler != null) mUIHandler.onStart();
-                        } else {
-                            animateOffsetToStartPosition(mTotalOffset);
-                        }
-                    }
-                }
-                mActivePointerId = MotionEvent.INVALID_POINTER_ID;
-                return false;
-            }
-            case MotionEvent.ACTION_CANCEL:
-                return false;
-        }
-
+    private boolean handleDownEvent(MotionEvent ev) {
+        resetMember();
+        mActivePointerId = ev.getPointerId(0);
+        int pointerIndex = ev.findPointerIndex(mActivePointerId);
+        if (pointerIndex < 0) return false;
+        mLastMotionX = ev.getX(pointerIndex);
+        mLastMotionY = ev.getY(pointerIndex);
         return true;
     }
 
-    private void startDragging(float x, float y) {
-        final float xDiff = x - mLastMotionX;
-        final float yDiff = y - mLastMotionY;
-        if (Math.abs(xDiff) < mTouchSlop && yDiff >= mTouchSlop && !isBeingDragged) {
-            mLastMotionY = mLastMotionY + (yDiff > 0 ? mTouchSlop : -mTouchSlop);
-            isBeingDragged = true;
-            if (canRefresh && mUIHandler != null) mUIHandler.onPrepare();
+    private void handleMoveEvent(MotionEvent ev) {
+        int pointerIndex = ev.findPointerIndex(mActivePointerId);
+        if (pointerIndex < 0) return;
+        boolean hasOffset = mTotalOffset != 0;
+        boolean canScrollUp = mContent != null && mContent.canScrollVertically(DIRECTION_NEGATIVE);
+        float x = ev.getX(pointerIndex);
+        float y = ev.getY(pointerIndex);
+        float xDiff = x - mLastMotionX;
+        float yDiff = y - mLastMotionY;
+
+        if (yDiff < 0) { // 上拉
+
+        } else { // 下拉
+            if (!canScrollUp) { //子组件不能向上滚动
+                if (!hasOffset && !isHandler) { // 没有偏移
+                    if (yDiff < mTouchSlop || Math.abs(xDiff) > yDiff) return;
+                    offsetChildren((int) (mTouchSlop / DRAGGING_RESISTANCE));
+                    isBeingDragged = true;
+                    mLastMotionX = ev.getX(pointerIndex);
+                    mLastMotionY = ev.getY(pointerIndex);
+                    isHandler = true;
+                } else if (isHandler) { // 发生了偏移
+                    offsetChildren((int) (yDiff / DRAGGING_RESISTANCE));
+                    mLastMotionX = ev.getX(pointerIndex);
+                    mLastMotionY = ev.getY(pointerIndex);
+                }
+            } else { // 子组件能向上滚动
+                if (isHandler) { // 交给子组件处理手势
+                    MotionEvent down = MotionEvent.obtain(
+                            ev.getDownTime(),
+                            ev.getEventTime(),
+                            MotionEvent.ACTION_DOWN,
+                            x,
+                            y - mTouchSlop,
+                            ev.getMetaState()
+                    );
+                    super.dispatchTouchEvent(down);
+                    down.recycle();
+                    isHandler = false;
+                }
+                mLastMotionX = x;
+                mLastMotionY = y;
+            }
         }
     }
+
+//    @Override
+//    public boolean onInterceptTouchEvent(MotionEvent ev) {
+//        if (!isEnabled() || mContent == null || mHeader == null || canChildScrollUp())
+//            return false;
+//        final int action = MotionEventCompat.getActionMasked(ev);
+//        int pointerIndex;
+//        switch (action) {
+//            case MotionEvent.ACTION_DOWN:
+//                mActivePointerId = ev.getPointerId(0);
+//                isBeingDragged = false;
+//                canRefresh = !isRefreshing;
+//                pointerIndex = ev.findPointerIndex(mActivePointerId);
+//                if (pointerIndex < 0) {
+//                    return false;
+//                }
+//                break;
+//            case MotionEvent.ACTION_MOVE:
+//                if (mActivePointerId == MotionEvent.INVALID_POINTER_ID) {
+//                    return false;
+//                }
+//                pointerIndex = ev.findPointerIndex(mActivePointerId);
+//                if (pointerIndex < 0) {
+//                    return false;
+//                }
+//                final float x = ev.getX(pointerIndex);
+//                final float y = ev.getY(pointerIndex);
+//                startDragging(x, y);
+//                break;
+//            case MotionEvent.ACTION_UP:
+//            case MotionEvent.ACTION_CANCEL:
+//                isBeingDragged = false;
+//                mActivePointerId = MotionEvent.INVALID_POINTER_ID;
+//                break;
+//        }
+//        return isBeingDragged;
+//    }
+
+//    public boolean onTouchEvent(MotionEvent ev) {
+//        if (!isEnabled() || mContent == null || mHeader == null)
+//            return false;
+//        mLastMotion = ev;
+//        final int action = ev.getActionMasked();
+//        int pointerIndex;
+//        switch (action) {
+//            case MotionEvent.ACTION_DOWN:
+//                mActivePointerId = ev.getPointerId(0);
+//                isBeingDragged = false;
+//                break;
+//            case MotionEvent.ACTION_MOVE: {
+//                pointerIndex = ev.findPointerIndex(mActivePointerId);
+//                if (pointerIndex < 0) {
+//                    return false;
+//                }
+//                final float x = ev.getX(pointerIndex);
+//                final float y = ev.getY(pointerIndex);
+//                startDragging(x, y);
+//                if (isBeingDragged) {
+//                    final int offset = (int) ((y - mLastMotionY) / DRAGGING_RESISTANCE);
+//                    final int targetOffset = mTotalOffset + offset;
+//                    if (canRefresh && !isRefreshing && mUIHandler != null)
+//                        mUIHandler.onPull(targetOffset >= mRefreshThreshold, targetOffset);
+//                    mLastMotionY = y;
+//                    if (targetOffset >= 0) {
+//                        offsetChildren(offset);
+//                    } else {
+//                        offsetChildren(-mTotalOffset);
+//                        return false;
+//                    }
+//                }
+//                break;
+//            }
+//            case MotionEvent.ACTION_UP: {
+//                pointerIndex = ev.findPointerIndex(mActivePointerId);
+//                if (pointerIndex < 0) {
+//                    return false;
+//                }
+//                if (isBeingDragged) {
+//                    isBeingDragged = false;
+//                    if (isRefreshing) {
+//                        if (mTotalOffset > mHeaderHeight)
+//                            animateOffsetToRefreshPosition(mTotalOffset);
+//                    } else {
+//                        if (canRefresh && mTotalOffset >= mRefreshThreshold) {
+//                            animateOffsetToRefreshPosition(mTotalOffset);
+//                            isRefreshing = true;
+//                            if (mListener != null) mListener.onRefresh();
+//                            if (mUIHandler != null) mUIHandler.onStart();
+//                        } else {
+//                            animateOffsetToStartPosition(mTotalOffset);
+//                        }
+//                    }
+//                }
+//                mActivePointerId = MotionEvent.INVALID_POINTER_ID;
+//                return false;
+//            }
+//            case MotionEvent.ACTION_CANCEL:
+//                return false;
+//        }
+//
+//        return true;
+//    }
+
+//    private void startDragging(float x, float y) {
+//        final float xDiff = x - mLastMotionX;
+//        final float yDiff = y - mLastMotionY;
+//        if (Math.abs(xDiff) < mTouchSlop && yDiff >= mTouchSlop && !isBeingDragged) {
+//            mLastMotionY = mLastMotionY + (yDiff > 0 ? mTouchSlop : -mTouchSlop);
+//            isBeingDragged = true;
+//            if (canRefresh && mUIHandler != null) mUIHandler.onPrepare();
+//        }
+//    }
 
     private void onSecondaryPointerUp(MotionEvent ev) {
         final int pointerIndex = MotionEventCompat.getActionIndex(ev);
@@ -288,13 +340,11 @@ public class RefreshLayout extends ViewGroup {
         }
     }
 
-    private void setOffsetTopAndBottom(int offset) {
-        mTotalOffset += offset;
+    private void offsetChildren(int offset) {
         if (offset == 0) return;
-        mHeader.bringToFront();
+        mTotalOffset += offset;
         ViewCompat.offsetTopAndBottom(mHeader, offset);
         ViewCompat.offsetTopAndBottom(mContent, offset);
-        updateLayout();
     }
 
     private void animateOffsetToStartPosition(int from) {
@@ -317,44 +367,22 @@ public class RefreshLayout extends ViewGroup {
     private void moveToStart(float interpolatedTime) {
         int targetTop = (mFrom + (int) (-mFrom * interpolatedTime));
         int offset = targetTop - mContent.getTop();
-        setOffsetTopAndBottom(offset);
+        offsetChildren(offset);
     }
 
     private void moveToRefresh(float interpolatedTime) {
         int targetTop = (mFrom + (int) ((mHeaderHeight - mFrom) * interpolatedTime));
         int offset = targetTop - mContent.getTop();
-        setOffsetTopAndBottom(offset);
+        offsetChildren(offset);
     }
 
     public boolean canChildScrollUp() {
-        if (mContent == null) return false;
-        if (android.os.Build.VERSION.SDK_INT < 14) {
-            if (mContent instanceof AbsListView) {
-                final AbsListView absListView = (AbsListView) mContent;
-                return absListView.getChildCount() > 0
-                        && (absListView.getFirstVisiblePosition() > 0 || absListView.getChildAt(0)
-                        .getTop() < absListView.getPaddingTop());
-            } else {
-                return ViewCompat.canScrollVertically(mContent, -1) || mContent.getScrollY() > 0;
-            }
-        } else {
-            return ViewCompat.canScrollVertically(mContent, -1);
-        }
-    }
-
-    @Override
-    public void requestDisallowInterceptTouchEvent(boolean b) {
-        if ((android.os.Build.VERSION.SDK_INT < 21 && mContent != null && mContent instanceof AbsListView)
-                || (mContent != null && !ViewCompat.isNestedScrollingEnabled(mContent))) {
-        } else {
-            super.requestDisallowInterceptTouchEvent(b);
-        }
+        return mContent != null && mContent.canScrollVertically(-1);
     }
 
     private boolean hasChild(View child) {
         return indexOfChild(child) != -1;
     }
-
 
     public void setHeaderView(View header) {
         if (mHeader == header) return;
@@ -387,10 +415,6 @@ public class RefreshLayout extends ViewGroup {
         addView(content);
     }
 
-    public View getHeaderView() {
-        return mHeader;
-    }
-
     public boolean isRefreshing() {
         return isRefreshing;
     }
@@ -406,7 +430,7 @@ public class RefreshLayout extends ViewGroup {
                 @Override
                 public void run() {
                     if (!isBeingDragged) animateOffsetToStartPosition(mTotalOffset);
-                    isRefreshing = refreshing;
+                    isRefreshing = false;
                 }
             }, 500);
         }
