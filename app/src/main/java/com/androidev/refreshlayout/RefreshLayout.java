@@ -19,7 +19,7 @@ import android.widget.FrameLayout;
 
 public class RefreshLayout extends FrameLayout {
 
-    private static final float DRAGGING_RESISTANCE = 2f;
+    private static final float DRAGGING_RESISTANCE = 2.5f;
     private static final float DECELERATE_INTERPOLATION_FACTOR = 2f;
     private static final float RATIO_OF_HEADER_HEIGHT_TO_REFRESH = 1.2f;
     private static final int DIRECTION_POSITIVE = 1;
@@ -137,7 +137,7 @@ public class RefreshLayout extends FrameLayout {
     }
 
     private void resetMember() {
-        isHandler = false;
+        isHandler = true;
         mLastMotionX = 0;
         mLastMotionY = 0;
         isBeingDragged = false;
@@ -165,12 +165,12 @@ public class RefreshLayout extends FrameLayout {
 
     private boolean handleDownEvent(MotionEvent ev) {
         resetMember();
-        isHandler = true;
         mActivePointerId = ev.getPointerId(0);
         int pointerIndex = ev.findPointerIndex(mActivePointerId);
         if (pointerIndex < 0) return false;
         mLastMotionX = ev.getX(pointerIndex);
         mLastMotionY = ev.getY(pointerIndex);
+        super.dispatchTouchEvent(ev);
         return true;
     }
 
@@ -182,16 +182,19 @@ public class RefreshLayout extends FrameLayout {
         float y = ev.getY(pointerIndex);
         float xDiff = x - mLastMotionX;
         float yDiff = y - mLastMotionY;
-        boolean canScrollUp = mContent.canScrollVertically(DIRECTION_NEGATIVE);
+
+        int offset = (int) yDiff;
 
         if (!isBeingDragged) {
             isBeingDragged = Math.abs(xDiff) < Math.abs(yDiff) && Math.abs(yDiff) >= mTouchSlop;
+            offset = 0;
         }
+
+        if (!isBeingDragged) return false;
 
         if (yDiff < 0) { // 上拉
             if (mTotalOffset > 0) {
-                isBeingDragged = true;
-                int offset = (int) yDiff;
+                isHandler = true;
                 int targetOffset = mTotalOffset + offset;
                 if (targetOffset < 0) {
                     offsetChildren(-mTotalOffset);
@@ -205,8 +208,8 @@ public class RefreshLayout extends FrameLayout {
             } else {
                 mLastMotionX = x;
                 mLastMotionY = y;
-                if (isBeingDragged) {
-                    isBeingDragged = false;
+                if (isHandler && mContent.canScrollVertically(DIRECTION_POSITIVE)) {
+                    isHandler = false;
                     MotionEvent down = MotionEvent.obtain(
                             ev.getDownTime(),
                             ev.getEventTime(),
@@ -222,41 +225,35 @@ public class RefreshLayout extends FrameLayout {
                 }
             }
         } else { // 下拉
-            if (!canScrollUp) { //子组件不能向上滚动
-                if (isBeingDragged) {
-                    if (!isHandler || mTotalOffset != 0) {
-                        int offset = (int) (yDiff / DRAGGING_RESISTANCE);
-                        if (!isHandler) {
-                            isHandler = true;
-                            offset = Math.max(offset, 1);
-                        }
-                        offsetChildren(offset);
-                    } else {
-                        offsetChildren((int) (mTouchSlop / DRAGGING_RESISTANCE));
+            if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) { //子组件不能向上滚动
+                if (!isHandler || mTotalOffset != 0) {
+                    offset = (int) (offset / DRAGGING_RESISTANCE);
+                    if (!isHandler) {
+                        isHandler = true;
+                        offset = Math.max(offset, 1);
                     }
-                    mLastMotionX = x;
-                    mLastMotionY = y;
-                    return true;
                 }
+                offsetChildren(offset);
+                mLastMotionX = x;
+                mLastMotionY = y;
+                return true;
             } else {
-                if (isBeingDragged) {
-                    mLastMotionX = x;
-                    mLastMotionY = y;
-                    if (isHandler) { // 交给子组件处理
-                        isHandler = false;
-                        MotionEvent down = MotionEvent.obtain(
-                                ev.getDownTime(),
-                                ev.getEventTime(),
-                                MotionEvent.ACTION_DOWN,
-                                x,
-                                y - mTouchSlop,
-                                ev.getMetaState()
-                        );
-                        super.dispatchTouchEvent(down);
-                        down.recycle();
-                        super.dispatchTouchEvent(ev);
-                        return true;
-                    }
+                mLastMotionX = x;
+                mLastMotionY = y;
+                if (isHandler) {
+                    isHandler = false;
+                    MotionEvent down = MotionEvent.obtain(
+                            ev.getDownTime(),
+                            ev.getEventTime(),
+                            MotionEvent.ACTION_DOWN,
+                            x,
+                            y - mTouchSlop,
+                            ev.getMetaState()
+                    );
+                    super.dispatchTouchEvent(down);
+                    down.recycle();
+                    super.dispatchTouchEvent(ev);
+                    return true;
                 }
             }
         }
