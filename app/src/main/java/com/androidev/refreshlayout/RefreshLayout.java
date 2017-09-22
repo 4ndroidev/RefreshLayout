@@ -192,6 +192,9 @@ public class RefreshLayout extends FrameLayout {
 
         if (!isBeingDragged) return false;
 
+        mLastMotionX = x;
+        mLastMotionY = y;
+
         if (yDiff < 0) { // 上拉
             if (mTotalOffset > 0) {
                 isHandler = true;
@@ -202,12 +205,8 @@ public class RefreshLayout extends FrameLayout {
                 } else {
                     offsetChildren(offset);
                 }
-                mLastMotionX = x;
-                mLastMotionY = y;
                 return true;
             } else {
-                mLastMotionX = x;
-                mLastMotionY = y;
                 if (isHandler && mContent.canScrollVertically(DIRECTION_POSITIVE)) {
                     isHandler = false;
                     MotionEvent down = MotionEvent.obtain(
@@ -234,12 +233,8 @@ public class RefreshLayout extends FrameLayout {
                     }
                 }
                 offsetChildren(offset);
-                mLastMotionX = x;
-                mLastMotionY = y;
                 return true;
             } else {
-                mLastMotionX = x;
-                mLastMotionY = y;
                 if (isHandler) {
                     isHandler = false;
                     MotionEvent down = MotionEvent.obtain(

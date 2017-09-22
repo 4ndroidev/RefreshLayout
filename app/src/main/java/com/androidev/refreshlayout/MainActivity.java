@@ -12,12 +12,12 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         final RefreshLayout refreshLayout = (RefreshLayout) findViewById(R.id.refresh_layout);
         final ScrollView scrollView = (ScrollView) findViewById(R.id.scrollview);
-        scrollView.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                scrollView.smoothScrollTo(0, 200);
-            }
-        }, 1000);
+//        scrollView.postDelayed(new Runnable() {
+//            @Override
+//            public void run() {
+//                scrollView.smoothScrollTo(0, 200);
+//            }
+//        }, 1000);
         refreshLayout.setOnRefreshListener(new RefreshLayout.OnRefreshListener() {
             @Override
             public void onRefresh() {
