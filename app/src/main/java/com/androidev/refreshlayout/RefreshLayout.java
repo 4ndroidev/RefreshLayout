@@ -15,10 +15,6 @@ import android.view.animation.Transformation;
 import android.widget.FrameLayout;
 import android.widget.OverScroller;
 
-/**
- * refer to {@link android.support.v4.widget.SwipeRefreshLayout}
- */
-
 public class RefreshLayout extends FrameLayout {
 
     private static final float DRAGGING_RESISTANCE = 2.5f;
@@ -457,10 +453,12 @@ public class RefreshLayout extends FrameLayout {
         this.mListener = listener;
     }
 
+    @SuppressWarnings(value = "all")
     public interface OnRefreshListener {
         void onRefresh();
     }
 
+    @SuppressWarnings(value = "all")
     public interface RefreshHeader {
 
         void onPrepare();
