@@ -5,6 +5,7 @@ import android.support.v4.view.MotionEventCompat;
 import android.support.v4.view.ViewCompat;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.animation.Animation;
@@ -12,6 +13,7 @@ import android.view.animation.DecelerateInterpolator;
 import android.view.animation.Interpolator;
 import android.view.animation.Transformation;
 import android.widget.FrameLayout;
+import android.widget.OverScroller;
 
 /**
  * refer to {@link android.support.v4.widget.SwipeRefreshLayout}
@@ -25,6 +27,19 @@ public class RefreshLayout extends FrameLayout {
     private static final int DIRECTION_POSITIVE = 1;
     private static final int DIRECTION_NEGATIVE = -1;
 
+    private static final Interpolator sQuinticInterpolator = new Interpolator() {
+        @Override
+        public float getInterpolation(float t) {
+            t -= 1.0f;
+            return t * t * t * t * t + 1.0f;
+        }
+    };
+
+    private VelocityTracker mVelocityTracker;
+    private int mMaximumVelocity;
+    private int mMinimumVelocity;
+    private ViewFlinger mViewFlinger;
+
     private View mHeader;
     private View mContent;
 
@@ -32,7 +47,8 @@ public class RefreshLayout extends FrameLayout {
     private int mTouchSlop;
     private int mHeaderHeight;
     private int mRefreshThreshold;
-    private int mActivePointerId = MotionEvent.INVALID_POINTER_ID;
+
+    private int mActivePointerId;
 
     private int mTotalOffset;
     private float mLastMotionX;
@@ -77,7 +93,12 @@ public class RefreshLayout extends FrameLayout {
 
     private void init(Context context) {
         setWillNotDraw(false);
-        mTouchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        mViewFlinger = new ViewFlinger();
+        ViewConfiguration configuration = ViewConfiguration.get(context);
+        mActivePointerId = MotionEvent.INVALID_POINTER_ID;
+        mTouchSlop = configuration.getScaledTouchSlop();
+        mMinimumVelocity = configuration.getScaledMinimumFlingVelocity();
+        mMaximumVelocity = configuration.getScaledMaximumFlingVelocity();
         mAnimateToStartPosition.setInterpolator(mDecelerateInterpolator);
         mAnimateToRefreshPosition.setInterpolator(mDecelerateInterpolator);
     }
@@ -142,10 +163,27 @@ public class RefreshLayout extends FrameLayout {
         mLastMotionY = 0;
         isBeingDragged = false;
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
+        initVelocityTrackIfNeeded();
+    }
+
+    private void initVelocityTrackIfNeeded() {
+        if (mVelocityTracker == null) {
+            mVelocityTracker = VelocityTracker.obtain();
+        } else {
+            mVelocityTracker.clear();
+        }
+    }
+
+    private void recycleVelocityTrack() {
+        if (mVelocityTracker != null) {
+            mVelocityTracker.recycle();
+            mVelocityTracker = null;
+        }
     }
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
+
         int action = ev.getActionMasked();
         switch (action) {
 
@@ -158,18 +196,21 @@ public class RefreshLayout extends FrameLayout {
 
             case MotionEvent.ACTION_CANCEL:
             case MotionEvent.ACTION_UP:
-                break;
+                if (handleUpEvent(ev)) return true;
         }
         return super.dispatchTouchEvent(ev);
     }
 
     private boolean handleDownEvent(MotionEvent ev) {
         resetMember();
+        mVelocityTracker.addMovement(ev);
         mActivePointerId = ev.getPointerId(0);
         int pointerIndex = ev.findPointerIndex(mActivePointerId);
         if (pointerIndex < 0) return false;
         mLastMotionX = ev.getX(pointerIndex);
         mLastMotionY = ev.getY(pointerIndex);
+        isBeingDragged = !mViewFlinger.isFinished();
+        mViewFlinger.stop();
         super.dispatchTouchEvent(ev);
         return true;
     }
@@ -192,6 +233,8 @@ public class RefreshLayout extends FrameLayout {
 
         if (!isBeingDragged) return false;
 
+        mVelocityTracker.addMovement(ev);
+
         mLastMotionX = x;
         mLastMotionY = y;
 
@@ -204,6 +247,9 @@ public class RefreshLayout extends FrameLayout {
                     mContent.scrollBy(0, -targetOffset);
                 } else {
                     offsetChildren(offset);
+                }
+                if (mUIHandler != null) {
+                    mUIHandler.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
                 }
                 return true;
             } else {
@@ -224,15 +270,26 @@ public class RefreshLayout extends FrameLayout {
                 }
             }
         } else { // 下拉
-            if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) { //子组件不能向上滚动
+            if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
                 if (!isHandler || mTotalOffset != 0) {
                     offset = (int) (offset / DRAGGING_RESISTANCE);
                     if (!isHandler) {
                         isHandler = true;
                         offset = Math.max(offset, 1);
+                        if (mUIHandler != null) {
+                            mUIHandler.onPrepare();
+                        }
+                    }
+                }
+                if (isHandler && mTotalOffset == 0) {
+                    if (mUIHandler != null) {
+                        mUIHandler.onPrepare();
                     }
                 }
                 offsetChildren(offset);
+                if (mUIHandler != null) {
+                    mUIHandler.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
+                }
                 return true;
             } else {
                 if (isHandler) {
@@ -255,117 +312,30 @@ public class RefreshLayout extends FrameLayout {
         return false;
     }
 
-//    @Override
-//    public boolean onInterceptTouchEvent(MotionEvent ev) {
-//        if (!isEnabled() || mContent == null || mHeader == null || canChildScrollUp())
-//            return false;
-//        final int action = MotionEventCompat.getActionMasked(ev);
-//        int pointerIndex;
-//        switch (action) {
-//            case MotionEvent.ACTION_DOWN:
-//                mActivePointerId = ev.getPointerId(0);
-//                isBeingDragged = false;
-//                canRefresh = !isRefreshing;
-//                pointerIndex = ev.findPointerIndex(mActivePointerId);
-//                if (pointerIndex < 0) {
-//                    return false;
-//                }
-//                break;
-//            case MotionEvent.ACTION_MOVE:
-//                if (mActivePointerId == MotionEvent.INVALID_POINTER_ID) {
-//                    return false;
-//                }
-//                pointerIndex = ev.findPointerIndex(mActivePointerId);
-//                if (pointerIndex < 0) {
-//                    return false;
-//                }
-//                final float x = ev.getX(pointerIndex);
-//                final float y = ev.getY(pointerIndex);
-//                startDragging(x, y);
-//                break;
-//            case MotionEvent.ACTION_UP:
-//            case MotionEvent.ACTION_CANCEL:
-//                isBeingDragged = false;
-//                mActivePointerId = MotionEvent.INVALID_POINTER_ID;
-//                break;
-//        }
-//        return isBeingDragged;
-//    }
+    private boolean handleUpEvent(MotionEvent ev) {
+        boolean handled = false;
+        mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
+        int velocity = (int) mVelocityTracker.getYVelocity();
+        if (isBeingDragged) {
 
-//    public boolean onTouchEvent(MotionEvent ev) {
-//        if (!isEnabled() || mContent == null || mHeader == null)
-//            return false;
-//        mLastMotion = ev;
-//        final int action = ev.getActionMasked();
-//        int pointerIndex;
-//        switch (action) {
-//            case MotionEvent.ACTION_DOWN:
-//                mActivePointerId = ev.getPointerId(0);
-//                isBeingDragged = false;
-//                break;
-//            case MotionEvent.ACTION_MOVE: {
-//                pointerIndex = ev.findPointerIndex(mActivePointerId);
-//                if (pointerIndex < 0) {
-//                    return false;
-//                }
-//                final float x = ev.getX(pointerIndex);
-//                final float y = ev.getY(pointerIndex);
-//                startDragging(x, y);
-//                if (isBeingDragged) {
-//                    final int offset = (int) ((y - mLastMotionY) / DRAGGING_RESISTANCE);
-//                    final int targetOffset = mTotalOffset + offset;
-//                    if (canRefresh && !isRefreshing && mUIHandler != null)
-//                        mUIHandler.onPull(targetOffset >= mRefreshThreshold, targetOffset);
-//                    mLastMotionY = y;
-//                    if (targetOffset >= 0) {
-//                        offsetChildren(offset);
-//                    } else {
-//                        offsetChildren(-mTotalOffset);
-//                        return false;
-//                    }
-//                }
-//                break;
-//            }
-//            case MotionEvent.ACTION_UP: {
-//                pointerIndex = ev.findPointerIndex(mActivePointerId);
-//                if (pointerIndex < 0) {
-//                    return false;
-//                }
-//                if (isBeingDragged) {
-//                    isBeingDragged = false;
-//                    if (isRefreshing) {
-//                        if (mTotalOffset > mHeaderHeight)
-//                            animateOffsetToRefreshPosition(mTotalOffset);
-//                    } else {
-//                        if (canRefresh && mTotalOffset >= mRefreshThreshold) {
-//                            animateOffsetToRefreshPosition(mTotalOffset);
-//                            isRefreshing = true;
-//                            if (mListener != null) mListener.onRefresh();
-//                            if (mUIHandler != null) mUIHandler.onStart();
-//                        } else {
-//                            animateOffsetToStartPosition(mTotalOffset);
-//                        }
-//                    }
-//                }
-//                mActivePointerId = MotionEvent.INVALID_POINTER_ID;
-//                return false;
-//            }
-//            case MotionEvent.ACTION_CANCEL:
-//                return false;
-//        }
-//
-//        return true;
-//    }
-
-//    private void startDragging(float x, float y) {
-//        final float xDiff = x - mLastMotionX;
-//        final float yDiff = y - mLastMotionY;
-//        if (Math.abs(xDiff) < mTouchSlop && yDiff >= mTouchSlop && !isBeingDragged) {
-//            mLastMotionY = mLastMotionY + (yDiff > 0 ? mTouchSlop : -mTouchSlop);
-//            isBeingDragged = true;
-//            if (canRefresh && mUIHandler != null) mUIHandler.onPrepare();
-//        }
-//    }
+            if (Math.abs(velocity) > mMinimumVelocity) {
+                mViewFlinger.fling(velocity);
+            }
+            MotionEvent cancel = MotionEvent.obtain(
+                    ev.getDownTime(),
+                    ev.getEventTime(),
+                    MotionEvent.ACTION_CANCEL,
+                    mLastMotionX,
+                    mLastMotionY,
+                    ev.getMetaState()
+            );
+            super.dispatchTouchEvent(cancel);
+            cancel.recycle();
+            handled = true;
+        }
+        recycleVelocityTrack();
+        return handled;
+    }
 
     private void onSecondaryPointerUp(MotionEvent ev) {
         final int pointerIndex = MotionEventCompat.getActionIndex(ev);
@@ -381,6 +351,41 @@ public class RefreshLayout extends FrameLayout {
         mTotalOffset += offset;
         ViewCompat.offsetTopAndBottom(mHeader, offset);
         ViewCompat.offsetTopAndBottom(mContent, offset);
+    }
+
+    private void smoothScrollBy(int dy) {
+        if (dy == 0) return;
+        if (dy < 0) {
+            if (mTotalOffset > 0) {
+                if (-dy > mTotalOffset) {
+                    offsetChildren(-mTotalOffset);
+                    mContent.scrollBy(0, -dy - mTotalOffset);
+                } else {
+                    offsetChildren(dy);
+                }
+            } else {
+                mContent.scrollBy(0, -dy);
+            }
+        } else {
+            if (mTotalOffset > 0) {
+                if (mTotalOffset + dy < mHeaderHeight) {
+                    offsetChildren(dy);
+                } else {
+                    offsetChildren(mHeaderHeight - mTotalOffset);
+                }
+            } else {
+                if (mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
+                    mContent.scrollBy(0, -dy);
+                } else {
+                    offsetChildren(dy);
+                }
+            }
+        }
+    }
+
+    private boolean reachEnd() {
+        return !mContent.canScrollVertically(DIRECTION_NEGATIVE) && mTotalOffset >= mHeaderHeight
+                || !mContent.canScrollVertically(DIRECTION_POSITIVE);
     }
 
     private void animateOffsetToStartPosition(int from) {
@@ -410,10 +415,6 @@ public class RefreshLayout extends FrameLayout {
         int targetTop = (mFrom + (int) ((mHeaderHeight - mFrom) * interpolatedTime));
         int offset = targetTop - mContent.getTop();
         offsetChildren(offset);
-    }
-
-    public boolean canChildScrollUp() {
-        return mContent != null && mContent.canScrollVertically(-1);
     }
 
     private boolean hasChild(View child) {
@@ -495,5 +496,41 @@ public class RefreshLayout extends FrameLayout {
 
         void onPull(boolean willRefresh, int offset);
 
+    }
+
+    private class ViewFlinger implements Runnable {
+
+        private int mLastFlingY;
+        private OverScroller mScroller;
+
+        private ViewFlinger() {
+            this.mScroller = new OverScroller(getContext(), sQuinticInterpolator);
+        }
+
+        @Override
+        public void run() {
+            if (reachEnd()) {
+                mScroller.forceFinished(true);
+            } else if (mScroller.computeScrollOffset()) {
+                int currY = mScroller.getCurrY();
+                smoothScrollBy(currY - mLastFlingY);
+                mLastFlingY = currY;
+                postOnAnimation(this);
+            }
+        }
+
+        private boolean isFinished() {
+            return mScroller.isFinished();
+        }
+
+        private void stop() {
+            mScroller.forceFinished(true);
+        }
+
+        private void fling(int velocity) {
+            mLastFlingY = 0;
+            mScroller.fling(0, mLastFlingY, 0, velocity, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE);
+            postOnAnimation(this);
+        }
     }
 }

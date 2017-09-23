@@ -13,9 +13,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
-
 
 /*
  * 标版默认下拉刷新头部
@@ -33,17 +30,12 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
     private String completeMessage = "刷新完成";
 
     private int tintColor = Color.parseColor("#ff666666");
-    private long lastUpdateTime = System.currentTimeMillis();
-    private String lastUpdateKey = null;
 
     private RotateAnimation mFlipAnimation;
     private RotateAnimation mReverseFlipAnimation;
     private RotateAnimation mRotateAnimation;
     private TextView mTitle;
-    private TextView mTimestamp;
     private ImageView mIndicator;
-    private int widthMeasureSpec;
-    private int heightMeasureSpec;
 
     private int a;
 
@@ -66,13 +58,6 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
         buildAnimation();
     }
 
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-        this.widthMeasureSpec = widthMeasureSpec;
-        this.heightMeasureSpec = heightMeasureSpec;
-    }
-
     protected void initViews(Context context) {
         setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ((int) (7.5 * a))));
         LinearLayout childLayout = new LinearLayout(context);
@@ -89,12 +74,6 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
         childLayout.addView(mTitle);
         childLayout.setLayoutParams(new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
         addView(childLayout);
-        mTimestamp = new TextView(context);
-        mTimestamp.setTextSize(TypedValue.COMPLEX_UNIT_PX, 1.83f * a);
-        mTimestamp.setPadding(0, a, 0, 0);
-        mTimestamp.setLayoutParams(new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-        mTimestamp.setVisibility(GONE);
-        addView(mTimestamp);
     }
 
     private void buildAnimation() {
@@ -114,19 +93,12 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
         mRotateAnimation.setFillAfter(false);
     }
 
-    private void updateLayout() {
-        measure(widthMeasureSpec, heightMeasureSpec);
-        layout(getLeft(), getTop(), getRight(), getBottom());
-    }
-
     @Override
     public void onPrepare() {
         mTitle.setText(pullMessage);
         mIndicator.setVisibility(VISIBLE);
         mIndicator.setRotation(0);
         mIndicator.setImageResource(R.drawable.refresh_header_arrow);
-        mTimestamp.setText("最后更新时间: " + new SimpleDateFormat(LAST_UPDATE_TIME_FORMAT).format(new Date(lastUpdateTime)));
-        updateLayout();
     }
 
     @Override
@@ -137,7 +109,6 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
         mIndicator.setImageResource(R.drawable.refresh_header_loading);
         mIndicator.clearAnimation();
         mIndicator.startAnimation(mRotateAnimation);
-        updateLayout();
     }
 
     @Override
@@ -146,8 +117,6 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
         mIndicator.clearAnimation();
         mIndicator.setVisibility(GONE);
         refresh = false;
-        updateLayout();
-        lastUpdateTime = System.currentTimeMillis();
     }
 
     private boolean refresh;
@@ -158,12 +127,10 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
             mTitle.setText(pullMessage);
             mIndicator.clearAnimation();
             mIndicator.startAnimation(mReverseFlipAnimation);
-            updateLayout();
         } else if (!refresh && willRefresh) {
             mTitle.setText(releaseMessage);
             mIndicator.clearAnimation();
             mIndicator.startAnimation(mFlipAnimation);
-            updateLayout();
         }
         refresh = willRefresh;
     }

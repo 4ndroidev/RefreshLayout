@@ -6,30 +6,16 @@
 
     <com.androidev.refreshlayout.RefreshHeader
         android:layout_width="match_parent"
-        android:layout_height="300dp" />
+        android:layout_height="50dp" />
 
 
-    <ScrollView
-        android:id="@+id/scrollview"
+    <android.support.v7.widget.RecyclerView
+        android:id="@+id/recycler_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:overScrollMode="never"
         android:scrollbars="none">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@android:color/holo_purple"
-            android:gravity="center">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="600dp"
-                android:gravity="center"
-                android:text="hello world" />
-        </LinearLayout>
-
-
-    </ScrollView>
+    </android.support.v7.widget.RecyclerView>
 
 </com.androidev.refreshlayout.RefreshLayout>
