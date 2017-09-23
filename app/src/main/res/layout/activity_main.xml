@@ -4,11 +4,6 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <com.androidev.refreshlayout.RefreshHeader
-        android:layout_width="match_parent"
-        android:layout_height="50dp" />
-
-
     <android.support.v7.widget.RecyclerView
         android:id="@+id/recycler_view"
         android:layout_width="match_parent"

@@ -1,7 +1,6 @@
 package com.androidev.refreshlayout;
 
 import android.content.Context;
-import android.graphics.Color;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -17,19 +16,15 @@ import android.widget.TextView;
 /*
  * 标版默认下拉刷新头部
  */
-public class RefreshHeader extends LinearLayout implements RefreshLayout.RefreshUIHandler {
+public class DefaultHeader extends LinearLayout implements RefreshLayout.RefreshHeader {
 
     private final static int FLIP_DURATION = 150;
     private final static int ROTATE_DURATION = 2000;
-    private final static String LAST_UPDATE_TIME_FORMAT = "MM-dd HH:mm:ss";
-
 
     private String pullMessage = "下拉以刷新...";
     private String releaseMessage = "松开以刷新...";
     private String refreshMessage = "正在刷新中...";
     private String completeMessage = "刷新完成";
-
-    private int tintColor = Color.parseColor("#ff666666");
 
     private RotateAnimation mFlipAnimation;
     private RotateAnimation mReverseFlipAnimation;
@@ -39,21 +34,20 @@ public class RefreshHeader extends LinearLayout implements RefreshLayout.Refresh
 
     private int a;
 
-    public RefreshHeader(Context context) {
+    public DefaultHeader(Context context) {
         this(context, null);
     }
 
-    public RefreshHeader(Context context, AttributeSet attrs) {
+    public DefaultHeader(Context context, AttributeSet attrs) {
         this(context, attrs, 0);
     }
 
-    public RefreshHeader(Context context, AttributeSet attrs, int defStyle) {
+    public DefaultHeader(Context context, AttributeSet attrs, int defStyle) {
         super(context, attrs, defStyle);
         a = context.getResources().getDisplayMetrics().widthPixels / 60;
         setWillNotDraw(false);
         setOrientation(VERTICAL);
         setGravity(Gravity.CENTER);
-        setBackgroundColor(Color.YELLOW);
         initViews(context);
         buildAnimation();
     }

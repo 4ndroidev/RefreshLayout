@@ -1,13 +1,13 @@
 package com.androidev.refreshlayout;
 
 import android.content.Context;
-import android.support.v4.view.MotionEventCompat;
 import android.support.v4.view.ViewCompat;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.view.animation.Animation;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.Interpolator;
@@ -35,34 +35,32 @@ public class RefreshLayout extends FrameLayout {
         }
     };
 
-    private VelocityTracker mVelocityTracker;
+    private static final Interpolator sDecelerateInterpolator = new DecelerateInterpolator(DECELERATE_INTERPOLATION_FACTOR);
+
     private int mMaximumVelocity;
     private int mMinimumVelocity;
     private ViewFlinger mViewFlinger;
+    private VelocityTracker mVelocityTracker;
 
     private View mHeader;
     private View mContent;
 
-    private int mFrom;
+    private int mStartOffset;
+    private int mTotalOffset;
     private int mTouchSlop;
     private int mHeaderHeight;
     private int mRefreshThreshold;
-
     private int mActivePointerId;
 
-    private int mTotalOffset;
     private float mLastMotionX;
     private float mLastMotionY;
 
-    private boolean canRefresh;
     private boolean isRefreshing;
     private boolean isBeingDragged;
     private boolean isHandler;
 
     private OnRefreshListener mListener;
-    private RefreshUIHandler mUIHandler;
-
-    private final Interpolator mDecelerateInterpolator = new DecelerateInterpolator(DECELERATE_INTERPOLATION_FACTOR);
+    private RefreshHeader mRefreshHeader;
 
     private Animation mAnimateToStartPosition = new Animation() {
         @Override
@@ -92,44 +90,24 @@ public class RefreshLayout extends FrameLayout {
     }
 
     private void init(Context context) {
-        setWillNotDraw(false);
         mViewFlinger = new ViewFlinger();
         ViewConfiguration configuration = ViewConfiguration.get(context);
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
         mTouchSlop = configuration.getScaledTouchSlop();
         mMinimumVelocity = configuration.getScaledMinimumFlingVelocity();
         mMaximumVelocity = configuration.getScaledMaximumFlingVelocity();
-        mAnimateToStartPosition.setInterpolator(mDecelerateInterpolator);
-        mAnimateToRefreshPosition.setInterpolator(mDecelerateInterpolator);
+        mAnimateToStartPosition.setInterpolator(sDecelerateInterpolator);
+        mAnimateToRefreshPosition.setInterpolator(sDecelerateInterpolator);
+        setHeader(new DefaultHeader(context));
     }
 
     @Override
     protected void onFinishInflate() {
-        final int childCount = getChildCount();
-        if (childCount == 2) {
-            if (mContent == null || mHeader == null) {
-                View child1 = getChildAt(0);
-                View child2 = getChildAt(1);
-                if (child1 instanceof RefreshUIHandler) {
-                    mHeader = child1;
-                    mContent = child2;
-                    setUIHandler((RefreshUIHandler) mHeader);
-                } else if (child2 instanceof RefreshUIHandler) {
-                    mHeader = child2;
-                    mContent = child1;
-
-                } else {
-                    if (mContent == null && mHeader == null) {
-                        mHeader = child1;
-                        mContent = child2;
-                    } else {
-                        if (mHeader == null) {
-                            mHeader = mContent == child1 ? child2 : child1;
-                        } else {
-                            mContent = mHeader == child1 ? child2 : child1;
-                        }
-                    }
-                }
+        for (int i = 0, count = getChildCount(); i < count; i++) {
+            View child = getChildAt(i);
+            if (!(child instanceof RefreshHeader)) {
+                mContent = child;
+                break;
             }
         }
         super.onFinishInflate();
@@ -183,22 +161,19 @@ public class RefreshLayout extends FrameLayout {
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-
-        int action = ev.getActionMasked();
-        switch (action) {
-
+        if (!isEnabled() || mContent == null)
+            return super.dispatchTouchEvent(ev);
+        switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 return handleDownEvent(ev);
-
             case MotionEvent.ACTION_MOVE:
-                if (handleMoveEvent(ev)) return true;
-                break;
-
+                return handleMoveEvent(ev) || super.dispatchTouchEvent(ev);
             case MotionEvent.ACTION_CANCEL:
             case MotionEvent.ACTION_UP:
-                if (handleUpEvent(ev)) return true;
+                return handleUpEvent(ev) || super.dispatchTouchEvent(ev);
+            default:
+                return super.dispatchTouchEvent(ev);
         }
-        return super.dispatchTouchEvent(ev);
     }
 
     private boolean handleDownEvent(MotionEvent ev) {
@@ -228,7 +203,7 @@ public class RefreshLayout extends FrameLayout {
 
         if (!isBeingDragged) {
             isBeingDragged = Math.abs(xDiff) < Math.abs(yDiff) && Math.abs(yDiff) >= mTouchSlop;
-            offset = 0;
+            offset = 0; // first offset set to zero, so that it will not cause a little jump
         }
 
         if (!isBeingDragged) return false;
@@ -238,9 +213,13 @@ public class RefreshLayout extends FrameLayout {
         mLastMotionX = x;
         mLastMotionY = y;
 
-        if (yDiff < 0) { // 上拉
+        // divide to two parts, one is pulling up, the other is pulling down
+        // pulling up
+        if (yDiff < 0) {
+            // content view has offset, so handle the move event by own
             if (mTotalOffset > 0) {
                 isHandler = true;
+                // make sure `mTotalOffset==0` in the end
                 int targetOffset = mTotalOffset + offset;
                 if (targetOffset < 0) {
                     offsetChildren(-mTotalOffset);
@@ -248,13 +227,15 @@ public class RefreshLayout extends FrameLayout {
                 } else {
                     offsetChildren(offset);
                 }
-                if (mUIHandler != null) {
-                    mUIHandler.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
+                if (!isRefreshing && mRefreshHeader != null) {
+                    mRefreshHeader.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
                 }
                 return true;
             } else {
+                // content view hasn't offset, so dispatch the move event to the content view
                 if (isHandler && mContent.canScrollVertically(DIRECTION_POSITIVE)) {
                     isHandler = false;
+                    // by sending down event, make sure content view can handle the next move event to scroll
                     MotionEvent down = MotionEvent.obtain(
                             ev.getDownTime(),
                             ev.getEventTime(),
@@ -269,29 +250,25 @@ public class RefreshLayout extends FrameLayout {
                     return true;
                 }
             }
-        } else { // 下拉
+        } else {
+            // pulling down
+            // content view can't scroll up, so it will offset content view
             if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
-                if (!isHandler || mTotalOffset != 0) {
-                    offset = (int) (offset / DRAGGING_RESISTANCE);
-                    if (!isHandler) {
-                        isHandler = true;
-                        offset = Math.max(offset, 1);
-                        if (mUIHandler != null) {
-                            mUIHandler.onPrepare();
-                        }
-                    }
+                // `!isHandler` means content just scroll to the top, `mTotalOffset==0` means the initial time
+                if ((!isHandler || mTotalOffset == 0) && !isRefreshing && mRefreshHeader != null) {
+                    mRefreshHeader.onPrepare();
                 }
-                if (isHandler && mTotalOffset == 0) {
-                    if (mUIHandler != null) {
-                        mUIHandler.onPrepare();
-                    }
+                // transfer processing right
+                if (!isHandler) {
+                    isHandler = true;
                 }
-                offsetChildren(offset);
-                if (mUIHandler != null) {
-                    mUIHandler.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
+                offsetChildren((int) (offset / DRAGGING_RESISTANCE));
+                if (!isRefreshing && mRefreshHeader != null) {
+                    mRefreshHeader.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
                 }
                 return true;
             } else {
+                // content view can scroll up, so dispatch the move event to the content view
                 if (isHandler) {
                     isHandler = false;
                     MotionEvent down = MotionEvent.obtain(
@@ -317,9 +294,20 @@ public class RefreshLayout extends FrameLayout {
         mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
         int velocity = (int) mVelocityTracker.getYVelocity();
         if (isBeingDragged) {
-
-            if (Math.abs(velocity) > mMinimumVelocity) {
+            handled = true;
+            if (mTotalOffset >= mRefreshThreshold) {
+                animateOffsetToRefreshPosition(mTotalOffset);
+                if (!isRefreshing) {
+                    isRefreshing = true;
+                    if (mRefreshHeader != null) mRefreshHeader.onStart();
+                    if (mListener != null) mListener.onRefresh();
+                }
+            } else if (!isRefreshing && mTotalOffset > 0) {
+                animateOffsetToStartPosition(mTotalOffset);
+            } else if (Math.abs(velocity) > mMinimumVelocity) {
                 mViewFlinger.fling(velocity);
+            } else {
+                handled = false;
             }
             MotionEvent cancel = MotionEvent.obtain(
                     ev.getDownTime(),
@@ -331,19 +319,10 @@ public class RefreshLayout extends FrameLayout {
             );
             super.dispatchTouchEvent(cancel);
             cancel.recycle();
-            handled = true;
         }
         recycleVelocityTrack();
+        isBeingDragged = false;
         return handled;
-    }
-
-    private void onSecondaryPointerUp(MotionEvent ev) {
-        final int pointerIndex = MotionEventCompat.getActionIndex(ev);
-        final int pointerId = ev.getPointerId(pointerIndex);
-        if (pointerId == mActivePointerId) {
-            final int newPointerIndex = pointerIndex == 0 ? 1 : 0;
-            mActivePointerId = ev.getPointerId(newPointerIndex);
-        }
     }
 
     private void offsetChildren(int offset) {
@@ -376,29 +355,33 @@ public class RefreshLayout extends FrameLayout {
             } else {
                 if (mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
                     mContent.scrollBy(0, -dy);
-                } else {
-                    offsetChildren(dy);
+                } else if (isRefreshing) {
+                    if (mTotalOffset + dy <= mHeaderHeight)
+                        offsetChildren(dy);
+                    else
+                        offsetChildren(mHeaderHeight - mTotalOffset);
                 }
             }
         }
     }
 
     private boolean reachEnd() {
-        return !mContent.canScrollVertically(DIRECTION_NEGATIVE) && mTotalOffset >= mHeaderHeight
+        return isRefreshing && !mContent.canScrollVertically(DIRECTION_NEGATIVE) && mTotalOffset >= mHeaderHeight
+                || !isRefreshing && !mContent.canScrollVertically(DIRECTION_NEGATIVE)
                 || !mContent.canScrollVertically(DIRECTION_POSITIVE);
     }
 
-    private void animateOffsetToStartPosition(int from) {
-        mFrom = from;
-        long duration = (long) (250.0f * Math.abs(mFrom) / mHeaderHeight);
+    private void animateOffsetToStartPosition(int startOffset) {
+        mStartOffset = startOffset;
+        long duration = (long) (250.0f * Math.abs(mStartOffset) / mHeaderHeight);
         mAnimateToStartPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToStartPosition);
     }
 
-    private void animateOffsetToRefreshPosition(int from) {
-        mFrom = from;
-        int distance = Math.abs(mFrom - mHeaderHeight);
+    private void animateOffsetToRefreshPosition(int startOffset) {
+        mStartOffset = startOffset;
+        int distance = Math.abs(mStartOffset - mHeaderHeight);
         long duration = (long) (150.0f * distance / mHeaderHeight);
         mAnimateToRefreshPosition.setDuration(duration);
         clearAnimation();
@@ -406,13 +389,13 @@ public class RefreshLayout extends FrameLayout {
     }
 
     private void moveToStart(float interpolatedTime) {
-        int targetTop = (mFrom + (int) (-mFrom * interpolatedTime));
+        int targetTop = (mStartOffset + (int) (-mStartOffset * interpolatedTime));
         int offset = targetTop - mContent.getTop();
         offsetChildren(offset);
     }
 
     private void moveToRefresh(float interpolatedTime) {
-        int targetTop = (mFrom + (int) ((mHeaderHeight - mFrom) * interpolatedTime));
+        int targetTop = (mStartOffset + (int) ((mHeaderHeight - mStartOffset) * interpolatedTime));
         int offset = targetTop - mContent.getTop();
         offsetChildren(offset);
     }
@@ -421,61 +404,53 @@ public class RefreshLayout extends FrameLayout {
         return indexOfChild(child) != -1;
     }
 
-    public void setHeaderView(View header) {
+    public void setHeader(View header) {
         if (mHeader == header) return;
-        if (this.mHeader != null && hasChild(header)) {
+        if (this.mHeader != null && hasChild(mHeader)) {
             removeView(mHeader);
         }
         this.mHeader = header;
-        if (header == null) {
-            setUIHandler(null);
+        if (mHeader == null) {
+            mRefreshHeader = null;
             return;
         }
-        if (header instanceof RefreshUIHandler)
-            setUIHandler((RefreshUIHandler) header);
+        if (header instanceof RefreshHeader)
+            mRefreshHeader = (RefreshHeader) header;
         else
-            throw new IllegalArgumentException("Header View must implements RefreshUIHandler!");
+            throw new IllegalArgumentException("Header View must implements RefreshHeader!");
         if (header.getLayoutParams() == null)
             header.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         addView(header);
     }
 
-    public void setContentView(View content) {
-        if (mContent == content) return;
-        if (this.mContent != null && hasChild(mContent)) {
-            removeView(mContent);
+    public void addView(View child, ViewGroup.LayoutParams params) {
+        if (getChildCount() > 1) {
+            throw new IllegalStateException("RefreshLayout can host only one direct child exclude header");
         }
-        this.mContent = content;
-        if (content == null) return;
-        content.setOverScrollMode(OVER_SCROLL_NEVER);
-        content.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-        addView(content);
+        super.addView(child, params);
     }
 
+    @SuppressWarnings(value = "unused")
     public boolean isRefreshing() {
         return isRefreshing;
     }
 
     public void setRefreshing(final boolean refreshing) {
         if (!isRefreshing && refreshing) {
-            animateOffsetToRefreshPosition((int) mTotalOffset);
+            animateOffsetToRefreshPosition(mTotalOffset);
             isRefreshing = true;
-            if (mUIHandler != null) mUIHandler.onStart();
+            if (mRefreshHeader != null) mRefreshHeader.onStart();
         } else if (isRefreshing && !refreshing) {
-            if (mUIHandler != null) mUIHandler.onComplete();
+            if (mRefreshHeader != null) mRefreshHeader.onComplete();
             postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    if (!isBeingDragged) animateOffsetToStartPosition((int) mTotalOffset);
+                    if (!isBeingDragged) animateOffsetToStartPosition(mTotalOffset);
                     isRefreshing = false;
                 }
             }, 500);
         }
 
-    }
-
-    public void setUIHandler(RefreshUIHandler handler) {
-        this.mUIHandler = handler;
     }
 
     public void setOnRefreshListener(OnRefreshListener listener) {
@@ -486,7 +461,7 @@ public class RefreshLayout extends FrameLayout {
         void onRefresh();
     }
 
-    public interface RefreshUIHandler {
+    public interface RefreshHeader {
 
         void onPrepare();
 
