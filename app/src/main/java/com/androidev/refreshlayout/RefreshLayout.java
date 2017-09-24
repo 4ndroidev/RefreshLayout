@@ -188,6 +188,10 @@ public class RefreshLayout extends FrameLayout {
             case MotionEvent.ACTION_CANCEL:
             case MotionEvent.ACTION_UP:
                 return handleUpEvent(ev) || super.dispatchTouchEvent(ev);
+            case MotionEvent.ACTION_POINTER_DOWN:
+                return handlePointerDownEvent(ev) || super.dispatchTouchEvent(ev);
+            case MotionEvent.ACTION_POINTER_UP:
+                return handlePointerUpEvent(ev) || super.dispatchTouchEvent(ev);
             default:
                 return super.dispatchTouchEvent(ev);
         }
@@ -345,6 +349,29 @@ public class RefreshLayout extends FrameLayout {
         recycleVelocityTrack();
         isBeingDragged = false;
         return handled;
+    }
+
+    private boolean handlePointerDownEvent(MotionEvent ev) {
+        int pointerIndex = ev.getActionIndex();
+        if (pointerIndex < 0) {
+            return false;
+        }
+        mActivePointerId = ev.getPointerId(pointerIndex);
+        mLastMotionX = ev.getX(pointerIndex);
+        mLastMotionY = ev.getY(pointerIndex);
+        return false;
+    }
+
+    private boolean handlePointerUpEvent(MotionEvent ev) {
+        int pointerIndex = ev.getActionIndex();
+        int pointerId = ev.getPointerId(pointerIndex);
+        if (pointerId == mActivePointerId) {
+            final int newPointerIndex = pointerIndex == 0 ? 1 : 0;
+            mActivePointerId = ev.getPointerId(newPointerIndex);
+            mLastMotionX = ev.getX(newPointerIndex);
+            mLastMotionY = ev.getY(newPointerIndex);
+        }
+        return false;
     }
 
     private void offsetChildren(int offset) {
