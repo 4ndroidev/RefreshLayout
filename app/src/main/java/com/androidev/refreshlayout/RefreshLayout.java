@@ -51,6 +51,7 @@ public class RefreshLayout extends FrameLayout {
     private float mLastMotionX;
     private float mLastMotionY;
 
+    private boolean canRefresh;
     private boolean isRefreshing;
     private boolean isBeingDragged;
     private boolean isHandler;
@@ -72,6 +73,23 @@ public class RefreshLayout extends FrameLayout {
         }
     };
 
+    private Animation.AnimationListener mAnimationListener = new Animation.AnimationListener() {
+        @Override
+        public void onAnimationStart(Animation animation) {
+
+        }
+
+        @Override
+        public void onAnimationEnd(Animation animation) {
+            canRefresh = true;
+        }
+
+        @Override
+        public void onAnimationRepeat(Animation animation) {
+
+        }
+    };
+
     public RefreshLayout(Context context) {
         this(context, null);
     }
@@ -86,12 +104,14 @@ public class RefreshLayout extends FrameLayout {
     }
 
     private void init(Context context) {
+        canRefresh = true;
         mViewFlinger = new ViewFlinger();
         ViewConfiguration configuration = ViewConfiguration.get(context);
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
         mTouchSlop = configuration.getScaledTouchSlop();
         mMinimumVelocity = configuration.getScaledMinimumFlingVelocity();
         mMaximumVelocity = configuration.getScaledMaximumFlingVelocity();
+        mAnimateToStartPosition.setAnimationListener(mAnimationListener);
         mAnimateToStartPosition.setInterpolator(sDecelerateInterpolator);
         mAnimateToRefreshPosition.setInterpolator(sDecelerateInterpolator);
         setHeader(new DefaultHeader(context));
@@ -136,6 +156,7 @@ public class RefreshLayout extends FrameLayout {
         mLastMotionX = 0;
         mLastMotionY = 0;
         isBeingDragged = false;
+        canRefresh &= !isRefreshing;
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
         initVelocityTrackIfNeeded();
     }
@@ -223,7 +244,7 @@ public class RefreshLayout extends FrameLayout {
                 } else {
                     offsetChildren(offset);
                 }
-                if (!isRefreshing && mRefreshHeader != null) {
+                if (canRefresh && mRefreshHeader != null) {
                     mRefreshHeader.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
                 }
                 return true;
@@ -251,7 +272,7 @@ public class RefreshLayout extends FrameLayout {
             // content view can't scroll up, so it will offset content view
             if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
                 // `!isHandler` means content just scroll to the top, `mTotalOffset==0` means the initial time
-                if ((!isHandler || mTotalOffset == 0) && !isRefreshing && mRefreshHeader != null) {
+                if ((!isHandler || mTotalOffset == 0) && canRefresh && mRefreshHeader != null) {
                     mRefreshHeader.onPrepare();
                 }
                 // transfer processing right
@@ -259,7 +280,7 @@ public class RefreshLayout extends FrameLayout {
                     isHandler = true;
                 }
                 offsetChildren((int) (offset / DRAGGING_RESISTANCE));
-                if (!isRefreshing && mRefreshHeader != null) {
+                if (canRefresh && mRefreshHeader != null) {
                     mRefreshHeader.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
                 }
                 return true;
@@ -292,29 +313,34 @@ public class RefreshLayout extends FrameLayout {
         if (isBeingDragged) {
             handled = true;
             if (mTotalOffset >= mRefreshThreshold) {
-                animateOffsetToRefreshPosition(mTotalOffset);
-                if (!isRefreshing) {
+                if (canRefresh) {
+                    canRefresh = false;
                     isRefreshing = true;
+                    animateOffsetToRefreshPosition(mTotalOffset);
                     if (mRefreshHeader != null) mRefreshHeader.onStart();
                     if (mListener != null) mListener.onRefresh();
+                } else {
+                    animateOffsetToStartPosition(mTotalOffset);
                 }
-            } else if (!isRefreshing && mTotalOffset > 0) {
+            } else if (mTotalOffset > 0 && !isRefreshing) {
                 animateOffsetToStartPosition(mTotalOffset);
-            } else if (Math.abs(velocity) > mMinimumVelocity) {
+            } else if ((isRefreshing || isHandler) && Math.abs(velocity) > mMinimumVelocity) {
                 mViewFlinger.fling(velocity);
             } else {
                 handled = false;
             }
-            MotionEvent cancel = MotionEvent.obtain(
-                    ev.getDownTime(),
-                    ev.getEventTime(),
-                    MotionEvent.ACTION_CANCEL,
-                    mLastMotionX,
-                    mLastMotionY,
-                    ev.getMetaState()
-            );
-            super.dispatchTouchEvent(cancel);
-            cancel.recycle();
+            if (handled) {
+                MotionEvent cancel = MotionEvent.obtain(
+                        ev.getDownTime(),
+                        ev.getEventTime(),
+                        MotionEvent.ACTION_CANCEL,
+                        mLastMotionX,
+                        mLastMotionY,
+                        ev.getMetaState()
+                );
+                super.dispatchTouchEvent(cancel);
+                cancel.recycle();
+            }
         }
         recycleVelocityTrack();
         isBeingDragged = false;
@@ -330,7 +356,7 @@ public class RefreshLayout extends FrameLayout {
 
     private void smoothScrollBy(int dy) {
         if (dy == 0) return;
-        if (dy < 0) {
+        if (dy < 0) { // scroll down after pulling up
             if (mTotalOffset > 0) {
                 if (-dy > mTotalOffset) {
                     offsetChildren(-mTotalOffset);
@@ -341,7 +367,7 @@ public class RefreshLayout extends FrameLayout {
             } else {
                 mContent.scrollBy(0, -dy);
             }
-        } else {
+        } else { // scroll up after puling down
             if (mTotalOffset > 0) {
                 if (mTotalOffset + dy < mHeaderHeight) {
                     offsetChildren(dy);
@@ -349,6 +375,8 @@ public class RefreshLayout extends FrameLayout {
                     offsetChildren(mHeaderHeight - mTotalOffset);
                 }
             } else {
+                // will cause a deviation because we didn't get the scrollable range
+                // but doesn't mater the fling effect, so ignore it
                 if (mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
                     mContent.scrollBy(0, -dy);
                 } else if (isRefreshing) {
@@ -421,7 +449,7 @@ public class RefreshLayout extends FrameLayout {
 
     public void addView(View child, ViewGroup.LayoutParams params) {
         if (getChildCount() > 1) {
-            throw new IllegalStateException("RefreshLayout can host only one direct child exclude header");
+            throw new IllegalStateException("RefreshLayout can host only one direct child excluding header");
         }
         super.addView(child, params);
     }
