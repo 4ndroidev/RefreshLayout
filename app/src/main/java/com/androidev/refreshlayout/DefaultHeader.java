@@ -12,6 +12,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.androidev.refreshlayout.sample.R;
 
 /*
  * 标版默认下拉刷新头部
@@ -21,18 +22,18 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
     private final static int FLIP_DURATION = 150;
     private final static int ROTATE_DURATION = 2000;
 
-    private String pullMessage = "下拉以刷新...";
-    private String releaseMessage = "松开以刷新...";
-    private String refreshMessage = "正在刷新中...";
-    private String completeMessage = "刷新完成";
+    private final static String PULL_MESSAGE = "下拉刷新";
+    private final static String RELEASE_MESSAGE = "松开刷新";
+    private final static String REFRESH_MESSAGE = "正在刷新";
+    private final static String COMPLETE_MESSAGE = "刷新完成";
 
     private RotateAnimation mFlipAnimation;
     private RotateAnimation mReverseFlipAnimation;
     private RotateAnimation mRotateAnimation;
     private TextView mTitle;
     private ImageView mIndicator;
+    private boolean mWillRefresh;
 
-    private int a;
 
     public DefaultHeader(Context context) {
         this(context, null);
@@ -44,7 +45,6 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
 
     public DefaultHeader(Context context, AttributeSet attrs, int defStyle) {
         super(context, attrs, defStyle);
-        a = context.getResources().getDisplayMetrics().widthPixels / 60;
         setWillNotDraw(false);
         setOrientation(VERTICAL);
         setGravity(Gravity.CENTER);
@@ -53,21 +53,22 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
     }
 
     protected void initViews(Context context) {
-        setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ((int) (7.5 * a))));
-        LinearLayout childLayout = new LinearLayout(context);
-        childLayout.setOrientation(LinearLayout.HORIZONTAL);
-        childLayout.setGravity(Gravity.CENTER);
+        setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        setOrientation(LinearLayout.HORIZONTAL);
+        setGravity(Gravity.CENTER);
+        int paddingHorizontal = 0;
+        int paddingVertical = dp2px(12);
+        setPadding(paddingHorizontal, paddingVertical, paddingHorizontal, paddingVertical);
         mIndicator = new ImageView(context);
         mIndicator.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        mIndicator.setLayoutParams(new LayoutParams(4 * a, 4 * a));
-        childLayout.addView(mIndicator);
+        LayoutParams layoutParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        layoutParams.setMargins(0, 0, dp2px(5), 0);
+        mIndicator.setLayoutParams(layoutParams);
+        addView(mIndicator);
         mTitle = new TextView(context);
-        mTitle.setTextSize(TypedValue.COMPLEX_UNIT_PX, 2.33f * a);
-        mTitle.setPadding(2 * a, 0, 0, 0);
+        mTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         mTitle.setLayoutParams(new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-        childLayout.addView(mTitle);
-        childLayout.setLayoutParams(new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-        addView(childLayout);
+        addView(mTitle);
     }
 
     private void buildAnimation() {
@@ -89,7 +90,7 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
 
     @Override
     public void onPrepare() {
-        mTitle.setText(pullMessage);
+        mTitle.setText(PULL_MESSAGE);
         mIndicator.setVisibility(VISIBLE);
         mIndicator.setRotation(0);
         mIndicator.setImageResource(R.drawable.refresh_header_arrow);
@@ -97,7 +98,7 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
 
     @Override
     public void onStart() {
-        mTitle.setText(refreshMessage);
+        mTitle.setText(REFRESH_MESSAGE);
         mIndicator.setVisibility(VISIBLE);
         mIndicator.setRotation(0);
         mIndicator.setImageResource(R.drawable.refresh_header_loading);
@@ -107,30 +108,28 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
 
     @Override
     public void onComplete() {
-        mTitle.setText(completeMessage);
+        mTitle.setText(COMPLETE_MESSAGE);
         mIndicator.clearAnimation();
         mIndicator.setVisibility(GONE);
-        refresh = false;
+        mWillRefresh = false;
     }
-
-    private boolean refresh;
 
     @Override
     public void onPull(boolean willRefresh, int offset) {
-        if (refresh && !willRefresh) {
-            mTitle.setText(pullMessage);
+        if (mWillRefresh && !willRefresh) {
+            mTitle.setText(PULL_MESSAGE);
             mIndicator.clearAnimation();
             mIndicator.startAnimation(mReverseFlipAnimation);
-        } else if (!refresh && willRefresh) {
-            mTitle.setText(releaseMessage);
+        } else if (!mWillRefresh && willRefresh) {
+            mTitle.setText(RELEASE_MESSAGE);
             mIndicator.clearAnimation();
             mIndicator.startAnimation(mFlipAnimation);
         }
-        refresh = willRefresh;
+        mWillRefresh = willRefresh;
     }
 
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
+    private int dp2px(float value) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics());
     }
+
 }

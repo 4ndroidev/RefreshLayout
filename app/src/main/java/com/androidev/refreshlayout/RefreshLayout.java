@@ -35,9 +35,12 @@ public class RefreshLayout extends FrameLayout {
 
     private int mMaximumVelocity;
     private int mMinimumVelocity;
-    private ViewFlinger mViewFlinger;
+    private FlingHelper mFlingHelper;
     private VelocityTracker mVelocityTracker;
 
+    /**
+     * header view must implement {@link RefreshHeader}
+     */
     private View mHeader;
     private View mContent;
 
@@ -105,7 +108,7 @@ public class RefreshLayout extends FrameLayout {
 
     private void init(Context context) {
         canRefresh = true;
-        mViewFlinger = new ViewFlinger();
+        mFlingHelper = new FlingHelper();
         ViewConfiguration configuration = ViewConfiguration.get(context);
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
         mTouchSlop = configuration.getScaledTouchSlop();
@@ -205,8 +208,8 @@ public class RefreshLayout extends FrameLayout {
         if (pointerIndex < 0) return false;
         mLastMotionX = ev.getX(pointerIndex);
         mLastMotionY = ev.getY(pointerIndex);
-        isBeingDragged = !mViewFlinger.isFinished();
-        mViewFlinger.stop();
+        isBeingDragged = !mFlingHelper.isFinished();
+        mFlingHelper.stop();
         super.dispatchTouchEvent(ev);
         return true;
     }
@@ -230,6 +233,21 @@ public class RefreshLayout extends FrameLayout {
         if (!isBeingDragged) return false;
 
         mVelocityTracker.addMovement(ev);
+
+        // if moved, prevent content view to perform a long click
+        if (isHandler) {
+            MotionEvent cancel = MotionEvent.obtain(
+                    ev.getDownTime(),
+                    ev.getEventTime(),
+                    MotionEvent.ACTION_CANCEL,
+                    mLastMotionX,
+                    mLastMotionY,
+                    ev.getMetaState()
+            );
+            // must dispatch by content view , not by this viewGroup
+            mContent.dispatchTouchEvent(cancel);
+            cancel.recycle();
+        }
 
         mLastMotionX = x;
         mLastMotionY = y;
@@ -310,7 +328,7 @@ public class RefreshLayout extends FrameLayout {
         return false;
     }
 
-    private boolean handleUpEvent(MotionEvent ev) {
+    private boolean handleUpEvent(@SuppressWarnings(value = "unused") MotionEvent ev) {
         boolean handled = false;
         mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
         int velocity = (int) mVelocityTracker.getYVelocity();
@@ -328,22 +346,17 @@ public class RefreshLayout extends FrameLayout {
                 }
             } else if (mTotalOffset > 0 && !isRefreshing) {
                 animateOffsetToStartPosition(mTotalOffset);
-            } else if ((isRefreshing || isHandler) && Math.abs(velocity) > mMinimumVelocity) {
-                mViewFlinger.fling(velocity);
+            }
+            /*else if ((isRefreshing || isHandler) && Math.abs(velocity) > mMinimumVelocity) {
+                // content view should fling by itself but got a bug while pulling down a little, then pulling up rapidly
+                // it will not fling instead of performing a click, have no idea on it util now
+                mFlingHelper.fling(velocity);
+            } */
+            // remove condition `(isRefreshing || isHandler)`, so that it will fling by own, it seem to be ok!
+            else if (Math.abs(velocity) > mMinimumVelocity) {
+                mFlingHelper.fling(velocity);
             } else {
                 handled = false;
-            }
-            if (handled) {
-                MotionEvent cancel = MotionEvent.obtain(
-                        ev.getDownTime(),
-                        ev.getEventTime(),
-                        MotionEvent.ACTION_CANCEL,
-                        mLastMotionX,
-                        mLastMotionY,
-                        ev.getMetaState()
-                );
-                super.dispatchTouchEvent(cancel);
-                cancel.recycle();
             }
         }
         recycleVelocityTrack();
@@ -526,12 +539,12 @@ public class RefreshLayout extends FrameLayout {
 
     }
 
-    private class ViewFlinger implements Runnable {
+    private class FlingHelper implements Runnable {
 
         private int mLastFlingY;
         private OverScroller mScroller;
 
-        private ViewFlinger() {
+        private FlingHelper() {
             this.mScroller = new OverScroller(getContext(), sQuinticInterpolator);
         }
 

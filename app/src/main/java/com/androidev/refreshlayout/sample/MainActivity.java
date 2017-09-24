@@ -1,4 +1,4 @@
-package com.androidev.refreshlayout;
+package com.androidev.refreshlayout.sample;
 
 import android.os.Bundle;
 import android.support.v7.app.AppCompatActivity;
@@ -10,6 +10,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import com.androidev.refreshlayout.RefreshLayout;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -60,6 +62,13 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onClick(View v) {
                     Toast.makeText(MainActivity.this, "click:" + getAdapterPosition(), Toast.LENGTH_SHORT).show();
+                }
+            });
+            itemView.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    Toast.makeText(MainActivity.this, "long click:" + getAdapterPosition(), Toast.LENGTH_SHORT).show();
+                    return true;
                 }
             });
             textView = (TextView) itemView.findViewById(R.id.text);
