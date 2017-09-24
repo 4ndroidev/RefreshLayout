@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">library</string>
+    <string name="pull_message">PULL TO REFRESH</string>
+    <string name="release_message">RELEASE TO REFRESH</string>
+    <string name="refresh_message">REFRESHING</string>
+    <string name="complete_message">COMPLETED</string>
+</resources>

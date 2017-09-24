@@ -12,20 +12,10 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.androidev.refreshlayout.sample.R;
-
-/*
- * 标版默认下拉刷新头部
- */
 public class DefaultHeader extends LinearLayout implements RefreshLayout.RefreshHeader {
 
     private final static int FLIP_DURATION = 150;
     private final static int ROTATE_DURATION = 2000;
-
-    private final static String PULL_MESSAGE = "下拉刷新";
-    private final static String RELEASE_MESSAGE = "松开刷新";
-    private final static String REFRESH_MESSAGE = "正在刷新";
-    private final static String COMPLETE_MESSAGE = "刷新完成";
 
     private RotateAnimation mFlipAnimation;
     private RotateAnimation mReverseFlipAnimation;
@@ -49,7 +39,7 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
         setOrientation(VERTICAL);
         setGravity(Gravity.CENTER);
         initViews(context);
-        buildAnimation();
+        createAnimation();
     }
 
     protected void initViews(Context context) {
@@ -61,17 +51,16 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
         setPadding(paddingHorizontal, paddingVertical, paddingHorizontal, paddingVertical);
         mIndicator = new ImageView(context);
         mIndicator.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LayoutParams layoutParams = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        layoutParams.setMargins(0, 0, dp2px(5), 0);
-        mIndicator.setLayoutParams(layoutParams);
+        mIndicator.setLayoutParams(new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         addView(mIndicator);
         mTitle = new TextView(context);
-        mTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        mTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        mTitle.setPadding(dp2px(8), 0, 0, 0);
         mTitle.setLayoutParams(new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
         addView(mTitle);
     }
 
-    private void buildAnimation() {
+    private void createAnimation() {
         mFlipAnimation = new RotateAnimation(0, -180, RotateAnimation.RELATIVE_TO_SELF, 0.5f, RotateAnimation.RELATIVE_TO_SELF, 0.5f);
         mFlipAnimation.setInterpolator(new LinearInterpolator());
         mFlipAnimation.setDuration(FLIP_DURATION);
@@ -90,16 +79,14 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
 
     @Override
     public void onPrepare() {
-        mTitle.setText(PULL_MESSAGE);
-        mIndicator.setVisibility(VISIBLE);
+        mTitle.setText(R.string.pull_message);
         mIndicator.setRotation(0);
         mIndicator.setImageResource(R.drawable.refresh_header_arrow);
     }
 
     @Override
     public void onStart() {
-        mTitle.setText(REFRESH_MESSAGE);
-        mIndicator.setVisibility(VISIBLE);
+        mTitle.setText(R.string.refresh_message);
         mIndicator.setRotation(0);
         mIndicator.setImageResource(R.drawable.refresh_header_loading);
         mIndicator.clearAnimation();
@@ -108,20 +95,20 @@ public class DefaultHeader extends LinearLayout implements RefreshLayout.Refresh
 
     @Override
     public void onComplete() {
-        mTitle.setText(COMPLETE_MESSAGE);
+        mTitle.setText(R.string.complete_message);
+        mIndicator.setImageResource(R.drawable.refresh_header_done);
         mIndicator.clearAnimation();
-        mIndicator.setVisibility(GONE);
         mWillRefresh = false;
     }
 
     @Override
     public void onPull(boolean willRefresh, int offset) {
         if (mWillRefresh && !willRefresh) {
-            mTitle.setText(PULL_MESSAGE);
+            mTitle.setText(R.string.pull_message);
             mIndicator.clearAnimation();
             mIndicator.startAnimation(mReverseFlipAnimation);
         } else if (!mWillRefresh && willRefresh) {
-            mTitle.setText(RELEASE_MESSAGE);
+            mTitle.setText(R.string.release_message);
             mIndicator.clearAnimation();
             mIndicator.startAnimation(mFlipAnimation);
         }

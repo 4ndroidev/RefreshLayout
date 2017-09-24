@@ -79,7 +79,6 @@ public class RefreshLayout extends FrameLayout {
     private Animation.AnimationListener mAnimationListener = new Animation.AnimationListener() {
         @Override
         public void onAnimationStart(Animation animation) {
-
         }
 
         @Override
@@ -89,7 +88,6 @@ public class RefreshLayout extends FrameLayout {
 
         @Override
         public void onAnimationRepeat(Animation animation) {
-
         }
     };
 
