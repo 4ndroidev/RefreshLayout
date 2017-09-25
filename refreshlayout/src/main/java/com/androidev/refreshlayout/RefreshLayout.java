@@ -1,6 +1,7 @@
 package com.androidev.refreshlayout;
 
 import android.content.Context;
+import android.support.v7.widget.RecyclerView;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -391,7 +392,7 @@ public class RefreshLayout extends FrameLayout {
         mContent.offsetTopAndBottom(offset);
     }
 
-    private void smoothScrollBy(int dy) {
+    private void scrollBy(int dy) {
         if (dy == 0) return;
         if (dy < 0) { // scroll down after pulling up
             if (mTotalOffset > 0) {
@@ -518,12 +519,16 @@ public class RefreshLayout extends FrameLayout {
         this.mListener = listener;
     }
 
-    @SuppressWarnings(value = "all")
+    private void stopScroll() {
+        if (mContent instanceof RecyclerView) {
+            ((RecyclerView) mContent).stopScroll();
+        }
+    }
+
     public interface OnRefreshListener {
         void onRefresh();
     }
 
-    @SuppressWarnings(value = "all")
     public interface RefreshHeader {
 
         void onPrepare();
@@ -548,10 +553,10 @@ public class RefreshLayout extends FrameLayout {
         @Override
         public void run() {
             if (reachEnd()) {
-                mScroller.forceFinished(true);
+                stop();
             } else if (mScroller.computeScrollOffset()) {
                 int currY = mScroller.getCurrY();
-                smoothScrollBy(currY - mLastFlingY);
+                scrollBy(currY - mLastFlingY);
                 mLastFlingY = currY;
                 postOnAnimation(this);
             }
@@ -563,6 +568,7 @@ public class RefreshLayout extends FrameLayout {
 
         private void stop() {
             mScroller.forceFinished(true);
+            stopScroll();
         }
 
         private void fling(int velocity) {
