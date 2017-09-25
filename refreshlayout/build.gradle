@@ -23,7 +23,6 @@ android {
 
 dependencies {
     compile fileTree(include: ['*.jar'], dir: 'libs')
-    compile 'com.android.support:support-v4:25.0.0'
 }
 
 def siteUrl = 'https://github.com/4ndroidev/RefreshLayout'    // project homepage

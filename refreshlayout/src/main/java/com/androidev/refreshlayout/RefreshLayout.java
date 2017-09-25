@@ -1,7 +1,6 @@
 package com.androidev.refreshlayout;
 
 import android.content.Context;
-import android.support.v4.view.ViewCompat;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -388,8 +387,8 @@ public class RefreshLayout extends FrameLayout {
     private void offsetChildren(int offset) {
         if (offset == 0) return;
         mTotalOffset += offset;
-        ViewCompat.offsetTopAndBottom(mHeader, offset);
-        ViewCompat.offsetTopAndBottom(mContent, offset);
+        mHeader.offsetTopAndBottom(offset);
+        mContent.offsetTopAndBottom(offset);
     }
 
     private void smoothScrollBy(int dy) {
