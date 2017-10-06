@@ -67,8 +67,6 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     private boolean isBeingDragged;
     private boolean isPressedCanceled;
 
-    private boolean isNestedEnabled;
-
     private OverScroller mScroller;
     private FlingHelper mFlingHelper;
     private Method mResetTouchMethod;
@@ -79,6 +77,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     private RefreshHeader mRefreshHeader;
 
     private int mTotalUnconsumed;
+    private boolean isNestedEnabled;
     private boolean isNestedScrolling;
     private int[] mParentScrollConsumed = new int[2];
     private int[] mParentOffsetInWindow = new int[2];
