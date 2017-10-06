@@ -24,8 +24,6 @@ import android.widget.FrameLayout;
 import android.widget.OverScroller;
 import android.widget.ScrollView;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 public class RefreshLayout extends FrameLayout implements NestedScrollingParent, NestedScrollingChild {
@@ -63,15 +61,16 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
 
     private boolean canRefresh;
     private boolean isOffset;
+    private boolean isAnimating;
     private boolean isRefreshing;
     private boolean isBeingDragged;
-    private boolean isPressedCanceled;
+    private boolean isClickCanceled;
 
     private OverScroller mScroller;
     private FlingHelper mFlingHelper;
     private Method mResetTouchMethod;
     private VelocityTracker mVelocityTracker;
-    private AbsListViewFlingCompat mALVFlingCompat;
+    private AbsListViewCompat mAbsListViewCompat;
 
     private OnRefreshListener mListener;
     private RefreshHeader mRefreshHeader;
@@ -101,11 +100,13 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     private Animation.AnimationListener mAnimationListener = new Animation.AnimationListener() {
         @Override
         public void onAnimationStart(Animation animation) {
+            isAnimating = true;
         }
 
         @Override
         public void onAnimationEnd(Animation animation) {
-            canRefresh = !isRefreshing;
+            isAnimating = false;
+            canRefresh = !isRefreshing && mCurrentOffset == 0;
         }
 
         @Override
@@ -146,18 +147,20 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     private void postInit() {
         if (mContent == null) return;
         isNestedEnabled = ViewCompat.isNestedScrollingEnabled(mContent);
-        mALVFlingCompat = new AbsListViewFlingCompat();
         try {
-            Class<?> clazz = mContent.getClass();
             if (mContent instanceof RecyclerView) {
                 mScroller = new OverScroller(getContext(), sQuinticInterpolator);
-                mResetTouchMethod = clazz.getDeclaredMethod("resetTouch");
-            } else if (mContent instanceof ScrollView || mContent instanceof NestedScrollView) {
+                mResetTouchMethod = RecyclerView.class.getDeclaredMethod("resetTouch");
+            } else if (mContent instanceof ScrollView) {
                 mScroller = new OverScroller(getContext());
-                mResetTouchMethod = clazz.getDeclaredMethod("endDrag");
+                mResetTouchMethod = ScrollView.class.getDeclaredMethod("endDrag");
+            } else if (mContent instanceof NestedScrollView) {
+                mScroller = new OverScroller(getContext());
+                mResetTouchMethod = NestedScrollView.class.getDeclaredMethod("endDrag");
             } else if (mContent instanceof AbsListView) {
                 mScroller = new OverScroller(getContext());
-                mResetTouchMethod = clazz.getDeclaredMethod("recycleVelocityTracker");
+                mResetTouchMethod = AbsListView.class.getDeclaredMethod("recycleVelocityTracker");
+                mAbsListViewCompat = new AbsListViewCompat();
             }
             mResetTouchMethod.setAccessible(true);
         } catch (Exception e) {
@@ -238,6 +241,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         }
     }
 
+    // call content view reset touch method after intercepting touch up event to fling
     private void resetTouch() {
         if (!(mContent instanceof RecyclerView)) {
             ViewCompat.stopNestedScroll(mContent);
@@ -251,10 +255,36 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         }
     }
 
+    private void cancelClickEvent(MotionEvent ev) {
+        if (isClickCanceled) return;
+        isClickCanceled = true;
+        if (mContent instanceof AbsListView) {
+            mAbsListViewCompat.cancelClickEvent((AbsListView) mContent);
+        } else if (mContent instanceof ScrollView) {
+            super.dispatchTouchEvent(ev);
+        }
+    }
+
+    /**
+     * nested-scroll supported view list:
+     * {@link android.support.v7.widget.RecyclerView}
+     * {@link android.support.v4.widget.NestedScrollView}
+     * <p>
+     * only care about touch up event, intercept it to perform fling, when nested scroll is enabled
+     * because we can make header visible and invisible by {@link #onNestedScroll} and {@link #onNestedPreScroll}
+     */
     private boolean dispatchNestedTouchEvent(MotionEvent ev) {
+        boolean handled = false;
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 initVelocityTrackIfNeeded();
+//                mFlingHelper.stop();
+//                if (isAnimating) {
+//                    clearAnimation();
+//                    super.dispatchTouchEvent(ev);
+//                    cancelClickEvent();
+//                    handled = true;
+//                }
                 break;
             case MotionEvent.ACTION_UP:
                 mVelocityTracker.addMovement(ev);
@@ -262,16 +292,23 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                 int velocityX = (int) mVelocityTracker.getXVelocity();
                 int velocityY = (int) mVelocityTracker.getYVelocity();
                 recycleVelocityTrack();
-                boolean handled = mFlingHelper.fling(velocityX, velocityY);
+                handled = mFlingHelper.fling(velocityX, velocityY);
                 if (handled) resetTouch();
-                return handled || super.dispatchTouchEvent(ev);
         }
         if (mVelocityTracker != null) {
             mVelocityTracker.addMovement(ev);
         }
-        return super.dispatchTouchEvent(ev);
+        return handled || super.dispatchTouchEvent(ev);
     }
 
+    /**
+     * nested-scroll not supported view list:
+     * {@link android.widget.ScrollView} SDK_INT < LOLLIPOP
+     * {@link android.widget.ListView}
+     * {@link android.widget.GridView}
+     * <p>
+     * intercept move event to make header visible and invisible when content view can't scroll up
+     */
     private boolean dispatchRawTouchEvent(MotionEvent ev) {
         int pointerIndex;
         boolean handled = false;
@@ -279,8 +316,11 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             case MotionEvent.ACTION_DOWN:
                 initVelocityTrackIfNeeded();
                 isOffset = false;
-                isPressedCanceled = false;
-                isBeingDragged = !mScroller.isFinished();
+                isClickCanceled = false;
+                isBeingDragged = isAnimating || !mScroller.isFinished();
+                if (isBeingDragged) {
+                    clearAnimation();
+                }
                 mActivePointerId = ev.getPointerId(0);
                 pointerIndex = ev.findPointerIndex(mActivePointerId);
                 if (pointerIndex < 0) break;
@@ -297,30 +337,27 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                 }
                 if (!isBeingDragged) break;
                 mLastMotionY = y;
+                // intercept move event to offset header when content view can't scroll up
                 if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
+                    // pulling down
                     if (yDiff > 0) {
                         if (mCurrentOffset == 0 && canRefresh && mRefreshHeader != null) {
                             mRefreshHeader.onPrepare();
                         }
+                        // make header visible
                         offsetChildren((int) (yDiff * DRAGGING_RATE));
                         if (canRefresh && mRefreshHeader != null) {
                             mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
                         }
+
                         if (!isOffset) {
                             isOffset = true;
-                            isPressedCanceled = true;
-                            MotionEvent cancel = MotionEvent.obtain(
-                                    ev.getDownTime(),
-                                    ev.getEventTime(),
-                                    MotionEvent.ACTION_CANCEL,
-                                    ev.getX(),
-                                    ev.getY(),
-                                    ev.getMetaState());
-                            mContent.dispatchTouchEvent(cancel);
-                            cancel.recycle();
+                            cancelClickEvent(ev);
                         }
                         handled = true;
                     } else if (mCurrentOffset > 0) {
+                        // pulling up
+                        // make header invisible
                         if (-yDiff > mCurrentOffset) {
                             mContent.scrollBy(0, -yDiff - mCurrentOffset);
                             offsetChildren(-mCurrentOffset);
@@ -330,18 +367,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                         if (canRefresh && mRefreshHeader != null) {
                             mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
                         }
-                        if (!isPressedCanceled) {
-                            isPressedCanceled = true;
-                            MotionEvent cancel = MotionEvent.obtain(
-                                    ev.getDownTime(),
-                                    ev.getEventTime(),
-                                    MotionEvent.ACTION_CANCEL,
-                                    ev.getX(),
-                                    ev.getY(),
-                                    ev.getMetaState());
-                            mContent.dispatchTouchEvent(cancel);
-                            cancel.recycle();
-                        }
+                        cancelClickEvent(ev);
                         handled = true;
                     }
                 }
@@ -362,14 +388,15 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                         }
                         if (isRefreshing) animateOffsetToRefreshPosition();
                         else animateOffsetToStartPosition();
+                        handled = true;
                     } else if (mCurrentOffset > 0 && !isRefreshing) {
                         animateOffsetToStartPosition();
+                        handled = true;
                     } else {
-                        if (handled = mFlingHelper.fling(velocityX, velocityY)) {
-                            resetTouch();
-                        }
+                        handled = mFlingHelper.fling(velocityX, velocityY);
                     }
                 }
+                if (handled) resetTouch();
                 isBeingDragged = false;
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -420,13 +447,14 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         } else if (mContent instanceof NestedScrollView) {
             ((NestedScrollView) mContent).fling(-velocityY);
         } else if (mContent instanceof AbsListView) {
-            mALVFlingCompat.fling((AbsListView) mContent, -velocityY);
+            mAbsListViewCompat.fling((AbsListView) mContent, -velocityY);
         }
     }
 
     private void animateOffsetToStartPosition() {
         mStartOffset = mCurrentOffset;
         long duration = (long) Math.min((250.0f * Math.abs(mStartOffset) / mHeaderHeight), 250);
+        if (duration <= 0) return;
         mAnimateToStartPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToStartPosition);
@@ -436,6 +464,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         mStartOffset = mCurrentOffset;
         int distance = Math.abs(mStartOffset - mHeaderHeight);
         long duration = (long) Math.min((150.0f * distance / mHeaderHeight), 250);
+        if (duration <= 0) return;
         mAnimateToRefreshPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToRefreshPosition);
@@ -449,13 +478,9 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         offsetChildren(mStartOffset + (int) ((mHeaderHeight - mStartOffset) * interpolatedTime) - mCurrentOffset);
     }
 
-    private boolean hasChild(View child) {
-        return indexOfChild(child) != -1;
-    }
-
     public void setHeader(View header) {
         if (mHeader == header) return;
-        if (this.mHeader != null && hasChild(mHeader)) {
+        if (this.mHeader != null && indexOfChild(mHeader) != -1) {
             removeView(mHeader);
         }
         this.mHeader = header;
@@ -524,6 +549,8 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     public void onNestedScrollAccepted(View child, View target, int axes) {
         mNestedScrollingParentHelper.onNestedScrollAccepted(child, target, axes);
         startNestedScroll(axes & ViewCompat.SCROLL_AXIS_VERTICAL);
+        // set it to current offset
+        // because maybe content view will get a touch down event while flinging hasn't been completed
         mTotalUnconsumed = mCurrentOffset;
         isNestedScrolling = true;
     }
@@ -531,6 +558,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     @Override
     public void onNestedPreScroll(View target, int dx, int dy, int[] consumed) {
         if (dy > 0 && mTotalUnconsumed > 0) {
+            // make header invisible
             offsetChildren(-Math.min(mTotalUnconsumed, dy));
             if (canRefresh && mRefreshHeader != null) {
                 mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
@@ -560,6 +588,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             }
             int offset = (int) (Math.abs(dy) * DRAGGING_RATE);
             mTotalUnconsumed += offset;
+            // make header visible
             offsetChildren(offset);
             if (canRefresh && mRefreshHeader != null) {
                 mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
@@ -580,7 +609,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             }
             if (isRefreshing) animateOffsetToRefreshPosition();
             else animateOffsetToStartPosition();
-        } else if (!isRefreshing) {
+        } else if (!isRefreshing && mCurrentOffset > 0) {
             animateOffsetToStartPosition();
         }
         stopNestedScroll();
@@ -672,6 +701,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
 
         @Override
         public void run() {
+            // scroll down, dispatch fling after offsetting header to zero
             if (mVelocityY < 0) {
                 if (mScroller.computeScrollOffset() && mCurrentOffset > 0) {
                     int offset = Math.max(mScroller.getCurrY() - mLastFlingY, -mCurrentOffset);
@@ -679,9 +709,12 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                     mLastFlingY = mScroller.getCurrY();
                     postOnAnimation(this);
                 } else if (!mScroller.isFinished()) {
+                    mScroller.forceFinished(true);
                     dispatchFling(mVelocityX, mVelocityY);
+
                 }
             } else {
+                // scroll up, if it is refreshing, make header visible after content view can't scroll up
                 if (mCurrentOffset >= mHeaderHeight || mScroller.isFinished()) {
                     mScroller.forceFinished(true);
                 } else if (isRefreshing && !mScroller.isFinished() && mScroller.computeScrollOffset()) {
@@ -715,6 +748,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                     }
                     return true;
                 } else if (!isNestedEnabled && isOffset && mCurrentOffset == 0) {
+                    mScroller.forceFinished(true);
                     dispatchFling(mVelocityX, mVelocityY);
                     return true;
                 }
@@ -725,51 +759,8 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                     return true;
                 }
             }
+            mScroller.forceFinished(true);
             return false;
-        }
-    }
-
-    private class AbsListViewFlingCompat {
-
-        private Field mFlingRunnableField;
-        private Constructor mFlingRunnableConstructor;
-        private Method mReportScrollStateChangeMethod;
-        private Method mStartMethod;
-
-        private AbsListViewFlingCompat() {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) return;
-            try {
-                Class<?> absListViewClass = AbsListView.class;
-                mFlingRunnableField = absListViewClass.getDeclaredField("mFlingRunnable");
-                mFlingRunnableField.setAccessible(true);
-                mReportScrollStateChangeMethod = absListViewClass.getDeclaredMethod("reportScrollStateChange", Integer.TYPE);
-                mReportScrollStateChangeMethod.setAccessible(true);
-                Class<?> flingRunnableClass = mFlingRunnableField.getType();
-                mFlingRunnableConstructor = flingRunnableClass.getDeclaredConstructor(AbsListView.class);
-                mFlingRunnableConstructor.setAccessible(true);
-                mStartMethod = flingRunnableClass.getDeclaredMethod("start", Integer.TYPE);
-                mStartMethod.setAccessible(true);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-
-        private void fling(AbsListView absListView, int velocity) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                absListView.fling(velocity);
-            } else {
-                try {
-                    Object flingRunnable = mFlingRunnableField.get(absListView);
-                    if (flingRunnable == null) {
-                        flingRunnable = mFlingRunnableConstructor.newInstance(absListView);
-                        mFlingRunnableField.set(absListView, flingRunnable);
-                    }
-                    mReportScrollStateChangeMethod.invoke(absListView, AbsListView.OnScrollListener.SCROLL_STATE_FLING);
-                    mStartMethod.invoke(flingRunnable, velocity);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
         }
     }
 
