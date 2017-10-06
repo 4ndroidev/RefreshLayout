@@ -1,6 +1,13 @@
 package com.androidev.refreshlayout;
 
 import android.content.Context;
+import android.os.Build;
+import android.support.v4.view.NestedScrollingChild;
+import android.support.v4.view.NestedScrollingChildHelper;
+import android.support.v4.view.NestedScrollingParent;
+import android.support.v4.view.NestedScrollingParentHelper;
+import android.support.v4.view.ViewCompat;
+import android.support.v4.widget.NestedScrollView;
 import android.support.v7.widget.RecyclerView;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
@@ -12,15 +19,20 @@ import android.view.animation.Animation;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.Interpolator;
 import android.view.animation.Transformation;
+import android.widget.AbsListView;
 import android.widget.FrameLayout;
 import android.widget.OverScroller;
+import android.widget.ScrollView;
 
-public class RefreshLayout extends FrameLayout {
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
-    private static final float DRAGGING_RESISTANCE = 2.5f;
+public class RefreshLayout extends FrameLayout implements NestedScrollingParent, NestedScrollingChild {
+
+    private static final float DRAGGING_RATE = .5f;
     private static final float DECELERATE_INTERPOLATION_FACTOR = 2f;
     private static final float RATIO_OF_HEADER_HEIGHT_TO_REFRESH = 1.2f;
-    private static final int DIRECTION_POSITIVE = 1;
     private static final int DIRECTION_NEGATIVE = -1;
 
     private static final Interpolator sQuinticInterpolator = new Interpolator() {
@@ -33,34 +45,45 @@ public class RefreshLayout extends FrameLayout {
 
     private static final Interpolator sDecelerateInterpolator = new DecelerateInterpolator(DECELERATE_INTERPOLATION_FACTOR);
 
-    private int mMaximumVelocity;
-    private int mMinimumVelocity;
-    private FlingHelper mFlingHelper;
-    private VelocityTracker mVelocityTracker;
-
-    /**
-     * header view must implement {@link RefreshHeader}
-     */
     private View mHeader;
     private View mContent;
 
     private int mStartOffset;
-    private int mTotalOffset;
+    private int mCurrentOffset;
+
+    private int mMinimumVelocity;
+    private int mMaximumVelocity;
+
     private int mTouchSlop;
     private int mHeaderHeight;
     private int mRefreshThreshold;
     private int mActivePointerId;
 
-    private float mLastMotionX;
     private float mLastMotionY;
 
     private boolean canRefresh;
+    private boolean isOffset;
     private boolean isRefreshing;
     private boolean isBeingDragged;
-    private boolean isHandler;
+    private boolean isPressedCanceled;
+
+    private boolean isNestedEnabled;
+
+    private OverScroller mScroller;
+    private FlingHelper mFlingHelper;
+    private Method mResetTouchMethod;
+    private VelocityTracker mVelocityTracker;
+    private AbsListViewFlingCompat mALVFlingCompat;
 
     private OnRefreshListener mListener;
     private RefreshHeader mRefreshHeader;
+
+    private int mTotalUnconsumed;
+    private boolean isNestedScrolling;
+    private int[] mParentScrollConsumed = new int[2];
+    private int[] mParentOffsetInWindow = new int[2];
+    private NestedScrollingParentHelper mNestedScrollingParentHelper;
+    private NestedScrollingChildHelper mNestedScrollingChildHelper;
 
     private Animation mAnimateToStartPosition = new Animation() {
         @Override
@@ -83,7 +106,7 @@ public class RefreshLayout extends FrameLayout {
 
         @Override
         public void onAnimationEnd(Animation animation) {
-            canRefresh = true;
+            canRefresh = !isRefreshing;
         }
 
         @Override
@@ -112,10 +135,51 @@ public class RefreshLayout extends FrameLayout {
         mTouchSlop = configuration.getScaledTouchSlop();
         mMinimumVelocity = configuration.getScaledMinimumFlingVelocity();
         mMaximumVelocity = configuration.getScaledMaximumFlingVelocity();
-        mAnimateToStartPosition.setAnimationListener(mAnimationListener);
         mAnimateToStartPosition.setInterpolator(sDecelerateInterpolator);
+        mAnimateToStartPosition.setAnimationListener(mAnimationListener);
         mAnimateToRefreshPosition.setInterpolator(sDecelerateInterpolator);
+        mAnimateToRefreshPosition.setAnimationListener(mAnimationListener);
+        mNestedScrollingParentHelper = new NestedScrollingParentHelper(this);
+        mNestedScrollingChildHelper = new NestedScrollingChildHelper(this);
         setHeader(new DefaultHeader(context));
+    }
+
+    private void postInit() {
+        if (mContent == null) return;
+        isNestedEnabled = ViewCompat.isNestedScrollingEnabled(mContent);
+        mALVFlingCompat = new AbsListViewFlingCompat();
+        try {
+            Class<?> clazz = mContent.getClass();
+            if (mContent instanceof RecyclerView) {
+                mScroller = new OverScroller(getContext(), sQuinticInterpolator);
+                mResetTouchMethod = clazz.getDeclaredMethod("resetTouch");
+            } else if (mContent instanceof ScrollView || mContent instanceof NestedScrollView) {
+                mScroller = new OverScroller(getContext());
+                mResetTouchMethod = clazz.getDeclaredMethod("endDrag");
+            } else if (mContent instanceof AbsListView) {
+                mScroller = new OverScroller(getContext());
+                mResetTouchMethod = clazz.getDeclaredMethod("recycleVelocityTracker");
+            }
+            mResetTouchMethod.setAccessible(true);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        mContent.setOverScrollMode(OVER_SCROLL_NEVER);
+        mContent.setVerticalScrollBarEnabled(false);
+        ViewCompat.setNestedScrollingEnabled(mContent, isNestedEnabled);
+        ViewCompat.setNestedScrollingEnabled(this, isNestedEnabled);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        postInit();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        mFlingHelper.stop();
     }
 
     @Override
@@ -143,23 +207,13 @@ public class RefreshLayout extends FrameLayout {
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         int left = getPaddingLeft();
-        int top = getPaddingTop() + mTotalOffset;
+        int top = getPaddingTop() + mCurrentOffset;
         if (mHeader != null) {
             mHeader.layout(left, top - mHeaderHeight, left + mHeader.getMeasuredWidth(), top);
         }
         if (mContent != null) {
             mContent.layout(left, top, left + mContent.getMeasuredWidth(), top + mContent.getMeasuredHeight());
         }
-    }
-
-    private void resetMember() {
-        isHandler = true;
-        mLastMotionX = 0;
-        mLastMotionY = 0;
-        isBeingDragged = false;
-        canRefresh &= !isRefreshing;
-        mActivePointerId = MotionEvent.INVALID_POINTER_ID;
-        initVelocityTrackIfNeeded();
     }
 
     private void initVelocityTrackIfNeeded() {
@@ -178,288 +232,222 @@ public class RefreshLayout extends FrameLayout {
     }
 
     @Override
-    public boolean dispatchTouchEvent(MotionEvent ev) {
-        if (!isEnabled() || mContent == null)
-            return super.dispatchTouchEvent(ev);
+    public void requestDisallowInterceptTouchEvent(boolean disallowIntercept) {
+        if ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP || !(mContent instanceof AbsListView))
+                && ViewCompat.isNestedScrollingEnabled(mContent)) {
+            super.requestDisallowInterceptTouchEvent(disallowIntercept);
+        }
+    }
+
+    private void resetTouch() {
+        if (!(mContent instanceof RecyclerView)) {
+            ViewCompat.stopNestedScroll(mContent);
+        }
+        if (mResetTouchMethod != null) {
+            try {
+                mResetTouchMethod.invoke(mContent);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private boolean dispatchNestedTouchEvent(MotionEvent ev) {
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                return handleDownEvent(ev);
-            case MotionEvent.ACTION_MOVE:
-                return handleMoveEvent(ev) || super.dispatchTouchEvent(ev);
-            case MotionEvent.ACTION_CANCEL:
+                initVelocityTrackIfNeeded();
+                break;
             case MotionEvent.ACTION_UP:
-                return handleUpEvent(ev) || super.dispatchTouchEvent(ev);
-            case MotionEvent.ACTION_POINTER_DOWN:
-                return handlePointerDownEvent(ev) || super.dispatchTouchEvent(ev);
-            case MotionEvent.ACTION_POINTER_UP:
-                return handlePointerUpEvent(ev) || super.dispatchTouchEvent(ev);
-            default:
-                return super.dispatchTouchEvent(ev);
+                mVelocityTracker.addMovement(ev);
+                mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
+                int velocityX = (int) mVelocityTracker.getXVelocity();
+                int velocityY = (int) mVelocityTracker.getYVelocity();
+                recycleVelocityTrack();
+                boolean handled = mFlingHelper.fling(velocityX, velocityY);
+                if (handled) resetTouch();
+                return handled || super.dispatchTouchEvent(ev);
         }
+        if (mVelocityTracker != null) {
+            mVelocityTracker.addMovement(ev);
+        }
+        return super.dispatchTouchEvent(ev);
     }
 
-    private boolean handleDownEvent(MotionEvent ev) {
-        resetMember();
-        mVelocityTracker.addMovement(ev);
-        mActivePointerId = ev.getPointerId(0);
-        int pointerIndex = ev.findPointerIndex(mActivePointerId);
-        if (pointerIndex < 0) return false;
-        mLastMotionX = ev.getX(pointerIndex);
-        mLastMotionY = ev.getY(pointerIndex);
-        isBeingDragged = !mFlingHelper.isFinished();
-        mFlingHelper.stop();
-        super.dispatchTouchEvent(ev);
-        return true;
-    }
-
-    private boolean handleMoveEvent(MotionEvent ev) {
-        int pointerIndex = ev.findPointerIndex(mActivePointerId);
-        if (pointerIndex < 0) return false;
-
-        float x = ev.getX(pointerIndex);
-        float y = ev.getY(pointerIndex);
-        float xDiff = x - mLastMotionX;
-        float yDiff = y - mLastMotionY;
-
-        int offset = (int) yDiff;
-
-        if (!isBeingDragged) {
-            isBeingDragged = Math.abs(xDiff) < Math.abs(yDiff) && Math.abs(yDiff) >= mTouchSlop;
-            offset = 0; // first offset set to zero, so that it will not cause a little jump
-        }
-
-        if (!isBeingDragged) return false;
-
-        mVelocityTracker.addMovement(ev);
-
-        // if moved, prevent content view to perform a long click
-        if (isHandler) {
-            MotionEvent cancel = MotionEvent.obtain(
-                    ev.getDownTime(),
-                    ev.getEventTime(),
-                    MotionEvent.ACTION_CANCEL,
-                    mLastMotionX,
-                    mLastMotionY,
-                    ev.getMetaState()
-            );
-            // must dispatch by content view , not by this viewGroup
-            mContent.dispatchTouchEvent(cancel);
-            cancel.recycle();
-        }
-
-        mLastMotionX = x;
-        mLastMotionY = y;
-
-        // divide to two parts, one is pulling up, the other is pulling down
-        // pulling up
-        if (yDiff < 0) {
-            // content view has offset, so handle the move event by own
-            if (mTotalOffset > 0) {
-                isHandler = true;
-                // make sure `mTotalOffset==0` in the end
-                int targetOffset = mTotalOffset + offset;
-                if (targetOffset < 0) {
-                    offsetChildren(-mTotalOffset);
-                    mContent.scrollBy(0, -targetOffset);
-                } else {
-                    offsetChildren(offset);
-                }
-                if (canRefresh && mRefreshHeader != null) {
-                    mRefreshHeader.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
-                }
-                return true;
-            } else {
-                // content view hasn't offset, so dispatch the move event to the content view
-                if (isHandler && mContent.canScrollVertically(DIRECTION_POSITIVE)) {
-                    isHandler = false;
-                    // by sending down event, make sure content view can handle the next move event to scroll
-                    MotionEvent down = MotionEvent.obtain(
-                            ev.getDownTime(),
-                            ev.getEventTime(),
-                            MotionEvent.ACTION_DOWN,
-                            x,
-                            y + mTouchSlop,
-                            ev.getMetaState()
-                    );
-                    super.dispatchTouchEvent(down);
-                    down.recycle();
-                    super.dispatchTouchEvent(ev);
-                    return true;
-                }
-            }
-        } else {
-            // pulling down
-            // content view can't scroll up, so it will offset content view
-            if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
-                // `!isHandler` means content just scroll to the top, `mTotalOffset==0` means the initial time
-                if ((!isHandler || mTotalOffset == 0) && canRefresh && mRefreshHeader != null) {
-                    mRefreshHeader.onPrepare();
-                }
-                // transfer processing right
-                if (!isHandler) {
-                    isHandler = true;
-                }
-                offsetChildren((int) (offset / DRAGGING_RESISTANCE));
-                if (canRefresh && mRefreshHeader != null) {
-                    mRefreshHeader.onPull(mTotalOffset >= mRefreshThreshold, mTotalOffset);
-                }
-                return true;
-            } else {
-                // content view can scroll up, so dispatch the move event to the content view
-                if (isHandler) {
-                    isHandler = false;
-                    MotionEvent down = MotionEvent.obtain(
-                            ev.getDownTime(),
-                            ev.getEventTime(),
-                            MotionEvent.ACTION_DOWN,
-                            x,
-                            y - mTouchSlop,
-                            ev.getMetaState()
-                    );
-                    super.dispatchTouchEvent(down);
-                    down.recycle();
-                    super.dispatchTouchEvent(ev);
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private boolean handleUpEvent(@SuppressWarnings(value = "unused") MotionEvent ev) {
+    private boolean dispatchRawTouchEvent(MotionEvent ev) {
+        int pointerIndex;
         boolean handled = false;
-        mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
-        int velocity = (int) mVelocityTracker.getYVelocity();
-        if (isBeingDragged) {
-            handled = true;
-            if (mTotalOffset >= mRefreshThreshold) {
-                if (canRefresh) {
-                    canRefresh = false;
-                    isRefreshing = true;
-                    animateOffsetToRefreshPosition(mTotalOffset);
-                    if (mRefreshHeader != null) mRefreshHeader.onStart();
-                    if (mListener != null) mListener.onRefresh();
-                } else {
-                    animateOffsetToStartPosition(mTotalOffset);
+        switch (ev.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                initVelocityTrackIfNeeded();
+                isOffset = false;
+                isPressedCanceled = false;
+                isBeingDragged = !mScroller.isFinished();
+                mActivePointerId = ev.getPointerId(0);
+                pointerIndex = ev.findPointerIndex(mActivePointerId);
+                if (pointerIndex < 0) break;
+                mLastMotionY = ev.getY(pointerIndex);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                pointerIndex = ev.findPointerIndex(mActivePointerId);
+                if (pointerIndex < 0) break;
+                float y = ev.getY(pointerIndex);
+                int yDiff = (int) (y - mLastMotionY);
+                if (!isBeingDragged) {
+                    isBeingDragged = Math.abs(yDiff) >= mTouchSlop;
+                    yDiff += yDiff > 0 ? -mTouchSlop : mTouchSlop;
                 }
-            } else if (mTotalOffset > 0 && !isRefreshing) {
-                animateOffsetToStartPosition(mTotalOffset);
-            }
-            /*else if ((isRefreshing || isHandler) && Math.abs(velocity) > mMinimumVelocity) {
-                // content view should fling by itself but got a bug while pulling down a little, then pulling up rapidly
-                // it will not fling instead of performing a click, have no idea on it util now
-                mFlingHelper.fling(velocity);
-            } */
-            // remove condition `(isRefreshing || isHandler)`, so that it will fling by own, it seem to be ok!
-            else if (Math.abs(velocity) > mMinimumVelocity) {
-                mFlingHelper.fling(velocity);
-            } else {
-                handled = false;
-            }
+                if (!isBeingDragged) break;
+                mLastMotionY = y;
+                if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
+                    if (yDiff > 0) {
+                        if (mCurrentOffset == 0 && canRefresh && mRefreshHeader != null) {
+                            mRefreshHeader.onPrepare();
+                        }
+                        offsetChildren((int) (yDiff * DRAGGING_RATE));
+                        if (canRefresh && mRefreshHeader != null) {
+                            mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
+                        }
+                        if (!isOffset) {
+                            isOffset = true;
+                            isPressedCanceled = true;
+                            MotionEvent cancel = MotionEvent.obtain(
+                                    ev.getDownTime(),
+                                    ev.getEventTime(),
+                                    MotionEvent.ACTION_CANCEL,
+                                    ev.getX(),
+                                    ev.getY(),
+                                    ev.getMetaState());
+                            mContent.dispatchTouchEvent(cancel);
+                            cancel.recycle();
+                        }
+                        handled = true;
+                    } else if (mCurrentOffset > 0) {
+                        if (-yDiff > mCurrentOffset) {
+                            mContent.scrollBy(0, -yDiff - mCurrentOffset);
+                            offsetChildren(-mCurrentOffset);
+                        } else {
+                            offsetChildren(yDiff);
+                        }
+                        if (canRefresh && mRefreshHeader != null) {
+                            mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
+                        }
+                        if (!isPressedCanceled) {
+                            isPressedCanceled = true;
+                            MotionEvent cancel = MotionEvent.obtain(
+                                    ev.getDownTime(),
+                                    ev.getEventTime(),
+                                    MotionEvent.ACTION_CANCEL,
+                                    ev.getX(),
+                                    ev.getY(),
+                                    ev.getMetaState());
+                            mContent.dispatchTouchEvent(cancel);
+                            cancel.recycle();
+                        }
+                        handled = true;
+                    }
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+                mVelocityTracker.addMovement(ev);
+                mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
+                int velocityX = (int) mVelocityTracker.getXVelocity();
+                int velocityY = (int) mVelocityTracker.getYVelocity();
+                recycleVelocityTrack();
+                if (isBeingDragged) {
+                    if (mCurrentOffset >= mRefreshThreshold) {
+                        if (canRefresh) {
+                            isRefreshing = true;
+                            canRefresh = false;
+                            if (mRefreshHeader != null) mRefreshHeader.onStart();
+                            if (mListener != null) mListener.onRefresh();
+                        }
+                        if (isRefreshing) animateOffsetToRefreshPosition();
+                        else animateOffsetToStartPosition();
+                    } else if (mCurrentOffset > 0 && !isRefreshing) {
+                        animateOffsetToStartPosition();
+                    } else {
+                        if (handled = mFlingHelper.fling(velocityX, velocityY)) {
+                            resetTouch();
+                        }
+                    }
+                }
+                isBeingDragged = false;
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                pointerIndex = ev.getActionIndex();
+                if (pointerIndex < 0) {
+                    return false;
+                }
+                mActivePointerId = ev.getPointerId(pointerIndex);
+                mLastMotionY = ev.getY(pointerIndex);
+                break;
+            case MotionEvent.ACTION_POINTER_UP:
+                pointerIndex = ev.getActionIndex();
+                int pointerId = ev.getPointerId(pointerIndex);
+                if (pointerId == mActivePointerId) {
+                    final int newPointerIndex = pointerIndex == 0 ? 1 : 0;
+                    mActivePointerId = ev.getPointerId(newPointerIndex);
+                    mLastMotionY = ev.getY(newPointerIndex);
+                }
+                break;
         }
-        recycleVelocityTrack();
-        isBeingDragged = false;
-        return handled;
+        if (mVelocityTracker != null) {
+            mVelocityTracker.addMovement(ev);
+        }
+        return handled || super.dispatchTouchEvent(ev);
     }
 
-    private boolean handlePointerDownEvent(MotionEvent ev) {
-        int pointerIndex = ev.getActionIndex();
-        if (pointerIndex < 0) {
-            return false;
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (isNestedEnabled) {
+            return dispatchNestedTouchEvent(ev);
+        } else {
+            return dispatchRawTouchEvent(ev);
         }
-        mActivePointerId = ev.getPointerId(pointerIndex);
-        mLastMotionX = ev.getX(pointerIndex);
-        mLastMotionY = ev.getY(pointerIndex);
-        return false;
-    }
-
-    private boolean handlePointerUpEvent(MotionEvent ev) {
-        int pointerIndex = ev.getActionIndex();
-        int pointerId = ev.getPointerId(pointerIndex);
-        if (pointerId == mActivePointerId) {
-            final int newPointerIndex = pointerIndex == 0 ? 1 : 0;
-            mActivePointerId = ev.getPointerId(newPointerIndex);
-            mLastMotionX = ev.getX(newPointerIndex);
-            mLastMotionY = ev.getY(newPointerIndex);
-        }
-        return false;
     }
 
     private void offsetChildren(int offset) {
         if (offset == 0) return;
-        mTotalOffset += offset;
         mHeader.offsetTopAndBottom(offset);
         mContent.offsetTopAndBottom(offset);
+        mCurrentOffset = mContent.getTop();
     }
 
-    private void scrollBy(int dy) {
-        if (dy == 0) return;
-        if (dy < 0) { // scroll down after pulling up
-            if (mTotalOffset > 0) {
-                if (-dy > mTotalOffset) {
-                    offsetChildren(-mTotalOffset);
-                    mContent.scrollBy(0, -dy - mTotalOffset);
-                } else {
-                    offsetChildren(dy);
-                }
-            } else {
-                mContent.scrollBy(0, -dy);
-            }
-        } else { // scroll up after puling down
-            if (mTotalOffset > 0) {
-                if (mTotalOffset + dy < mHeaderHeight) {
-                    offsetChildren(dy);
-                } else {
-                    offsetChildren(mHeaderHeight - mTotalOffset);
-                }
-            } else {
-                // will cause a deviation because we didn't get the scrollable range
-                // but doesn't mater the fling effect, so ignore it
-                if (mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
-                    mContent.scrollBy(0, -dy);
-                } else if (isRefreshing) {
-                    if (mTotalOffset + dy <= mHeaderHeight)
-                        offsetChildren(dy);
-                    else
-                        offsetChildren(mHeaderHeight - mTotalOffset);
-                }
-            }
+    private void dispatchFling(int velocityX, int velocityY) {
+        if (mContent instanceof RecyclerView) {
+            ((RecyclerView) mContent).fling(-velocityX, -velocityY);
+        } else if (mContent instanceof ScrollView) {
+            ((ScrollView) mContent).fling(-velocityY);
+        } else if (mContent instanceof NestedScrollView) {
+            ((NestedScrollView) mContent).fling(-velocityY);
+        } else if (mContent instanceof AbsListView) {
+            mALVFlingCompat.fling((AbsListView) mContent, -velocityY);
         }
     }
 
-    private boolean reachEnd() {
-        return isRefreshing && !mContent.canScrollVertically(DIRECTION_NEGATIVE) && mTotalOffset >= mHeaderHeight
-                || !isRefreshing && !mContent.canScrollVertically(DIRECTION_NEGATIVE)
-                || !mContent.canScrollVertically(DIRECTION_POSITIVE);
-    }
-
-    private void animateOffsetToStartPosition(int startOffset) {
-        mStartOffset = startOffset;
-        long duration = (long) (250.0f * Math.abs(mStartOffset) / mHeaderHeight);
+    private void animateOffsetToStartPosition() {
+        mStartOffset = mCurrentOffset;
+        long duration = (long) Math.min((250.0f * Math.abs(mStartOffset) / mHeaderHeight), 250);
         mAnimateToStartPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToStartPosition);
     }
 
-    private void animateOffsetToRefreshPosition(int startOffset) {
-        mStartOffset = startOffset;
+    private void animateOffsetToRefreshPosition() {
+        mStartOffset = mCurrentOffset;
         int distance = Math.abs(mStartOffset - mHeaderHeight);
-        long duration = (long) (150.0f * distance / mHeaderHeight);
+        long duration = (long) Math.min((150.0f * distance / mHeaderHeight), 250);
         mAnimateToRefreshPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToRefreshPosition);
     }
 
     private void moveToStart(float interpolatedTime) {
-        int targetTop = (mStartOffset + (int) (-mStartOffset * interpolatedTime));
-        int offset = targetTop - mContent.getTop();
-        offsetChildren(offset);
+        offsetChildren((int) (mStartOffset * (1 - interpolatedTime)) - mCurrentOffset);
     }
 
     private void moveToRefresh(float interpolatedTime) {
-        int targetTop = (mStartOffset + (int) ((mHeaderHeight - mStartOffset) * interpolatedTime));
-        int offset = targetTop - mContent.getTop();
-        offsetChildren(offset);
+        offsetChildren(mStartOffset + (int) ((mHeaderHeight - mStartOffset) * interpolatedTime) - mCurrentOffset);
     }
 
     private boolean hasChild(View child) {
@@ -497,9 +485,10 @@ public class RefreshLayout extends FrameLayout {
         return isRefreshing;
     }
 
+    @SuppressWarnings(value = "unused")
     public void setRefreshing(final boolean refreshing) {
         if (!isRefreshing && refreshing) {
-            animateOffsetToRefreshPosition(mTotalOffset);
+            animateOffsetToRefreshPosition();
             isRefreshing = true;
             if (mRefreshHeader != null) mRefreshHeader.onStart();
         } else if (isRefreshing && !refreshing) {
@@ -507,28 +496,160 @@ public class RefreshLayout extends FrameLayout {
             postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    if (!isBeingDragged) animateOffsetToStartPosition(mTotalOffset);
+                    if (!isBeingDragged && !isNestedScrolling) animateOffsetToStartPosition();
                     isRefreshing = false;
                 }
-            }, 500);
+            }, 800);
         }
 
     }
 
+    @SuppressWarnings(value = "unused")
     public void setOnRefreshListener(OnRefreshListener listener) {
         this.mListener = listener;
     }
 
-    private void stopScroll() {
-        if (mContent instanceof RecyclerView) {
-            ((RecyclerView) mContent).stopScroll();
+    // NestedScrollingParent
+
+    @Override
+    public boolean onStartNestedScroll(View child, View target, int nestedScrollAxes) {
+        return isEnabled() && (nestedScrollAxes & ViewCompat.SCROLL_AXIS_VERTICAL) != 0;
+    }
+
+    @Override
+    public int getNestedScrollAxes() {
+        return mNestedScrollingParentHelper.getNestedScrollAxes();
+    }
+
+    @Override
+    public void onNestedScrollAccepted(View child, View target, int axes) {
+        mNestedScrollingParentHelper.onNestedScrollAccepted(child, target, axes);
+        startNestedScroll(axes & ViewCompat.SCROLL_AXIS_VERTICAL);
+        mTotalUnconsumed = mCurrentOffset;
+        isNestedScrolling = true;
+    }
+
+    @Override
+    public void onNestedPreScroll(View target, int dx, int dy, int[] consumed) {
+        if (dy > 0 && mTotalUnconsumed > 0) {
+            offsetChildren(-Math.min(mTotalUnconsumed, dy));
+            if (canRefresh && mRefreshHeader != null) {
+                mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
+            }
+            if (dy > mTotalUnconsumed) {
+                consumed[1] = dy - mTotalUnconsumed;
+                mTotalUnconsumed = 0;
+            } else {
+                mTotalUnconsumed -= dy;
+                consumed[1] = dy;
+            }
+        }
+        final int[] parentConsumed = mParentScrollConsumed;
+        if (dispatchNestedPreScroll(dx - consumed[0], dy - consumed[1], parentConsumed, null)) {
+            consumed[0] += parentConsumed[0];
+            consumed[1] += parentConsumed[1];
         }
     }
 
+    @Override
+    public void onNestedScroll(View target, int dxConsumed, int dyConsumed, int dxUnconsumed, int dyUnconsumed) {
+        dispatchNestedScroll(dxConsumed, dyConsumed, dxUnconsumed, dyUnconsumed, mParentOffsetInWindow);
+        int dy = dyUnconsumed + mParentOffsetInWindow[1];
+        if (dy < 0 && !mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
+            if (mCurrentOffset == 0 && canRefresh && mRefreshHeader != null) {
+                mRefreshHeader.onPrepare();
+            }
+            int offset = (int) (Math.abs(dy) * DRAGGING_RATE);
+            mTotalUnconsumed += offset;
+            offsetChildren(offset);
+            if (canRefresh && mRefreshHeader != null) {
+                mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
+            }
+        }
+    }
+
+    @Override
+    public void onStopNestedScroll(View target) {
+        mNestedScrollingParentHelper.onStopNestedScroll(target);
+        isNestedScrolling = false;
+        if (mCurrentOffset >= mRefreshThreshold) {
+            if (canRefresh) {
+                isRefreshing = true;
+                canRefresh = false;
+                if (mRefreshHeader != null) mRefreshHeader.onStart();
+                if (mListener != null) mListener.onRefresh();
+            }
+            if (isRefreshing) animateOffsetToRefreshPosition();
+            else animateOffsetToStartPosition();
+        } else if (!isRefreshing) {
+            animateOffsetToStartPosition();
+        }
+        stopNestedScroll();
+    }
+
+    @Override
+    public boolean onNestedPreFling(View target, float velocityX, float velocityY) {
+        return dispatchNestedPreFling(velocityX, velocityY);
+    }
+
+    @Override
+    public boolean onNestedFling(View target, float velocityX, float velocityY, boolean consumed) {
+        return dispatchNestedFling(velocityX, velocityY, consumed);
+    }
+
+    // NestedScrollingChild
+
+    @Override
+    public void setNestedScrollingEnabled(boolean enabled) {
+        mNestedScrollingChildHelper.setNestedScrollingEnabled(enabled);
+    }
+
+    @Override
+    public boolean isNestedScrollingEnabled() {
+        return mNestedScrollingChildHelper.isNestedScrollingEnabled();
+    }
+
+    @Override
+    public boolean startNestedScroll(int axes) {
+        return mNestedScrollingChildHelper.startNestedScroll(axes);
+    }
+
+    @Override
+    public void stopNestedScroll() {
+        mNestedScrollingChildHelper.stopNestedScroll();
+    }
+
+    @Override
+    public boolean hasNestedScrollingParent() {
+        return mNestedScrollingChildHelper.hasNestedScrollingParent();
+    }
+
+    @Override
+    public boolean dispatchNestedScroll(int dxConsumed, int dyConsumed, int dxUnconsumed, int dyUnconsumed, int[] offsetInWindow) {
+        return mNestedScrollingChildHelper.dispatchNestedScroll(dxConsumed, dyConsumed, dxUnconsumed, dyUnconsumed, offsetInWindow);
+    }
+
+    @Override
+    public boolean dispatchNestedPreScroll(int dx, int dy, int[] consumed, int[] offsetInWindow) {
+        return mNestedScrollingChildHelper.dispatchNestedPreScroll(dx, dy, consumed, offsetInWindow);
+    }
+
+    @Override
+    public boolean dispatchNestedFling(float velocityX, float velocityY, boolean consumed) {
+        return mNestedScrollingChildHelper.dispatchNestedFling(velocityX, velocityY, consumed);
+    }
+
+    @Override
+    public boolean dispatchNestedPreFling(float velocityX, float velocityY) {
+        return mNestedScrollingChildHelper.dispatchNestedPreFling(velocityX, velocityY);
+    }
+
+    @SuppressWarnings(value = "all")
     public interface OnRefreshListener {
         void onRefresh();
     }
 
+    @SuppressWarnings(value = "all")
     public interface RefreshHeader {
 
         void onPrepare();
@@ -543,38 +664,114 @@ public class RefreshLayout extends FrameLayout {
 
     private class FlingHelper implements Runnable {
 
+        private int mVelocityX;
+        private int mVelocityY;
         private int mLastFlingY;
-        private OverScroller mScroller;
 
         private FlingHelper() {
-            this.mScroller = new OverScroller(getContext(), sQuinticInterpolator);
         }
 
         @Override
         public void run() {
-            if (reachEnd()) {
-                stop();
-            } else if (mScroller.computeScrollOffset()) {
-                int currY = mScroller.getCurrY();
-                scrollBy(currY - mLastFlingY);
-                mLastFlingY = currY;
-                postOnAnimation(this);
+            if (mVelocityY < 0) {
+                if (mScroller.computeScrollOffset() && mCurrentOffset > 0) {
+                    int offset = Math.max(mScroller.getCurrY() - mLastFlingY, -mCurrentOffset);
+                    offsetChildren(offset);
+                    mLastFlingY = mScroller.getCurrY();
+                    postOnAnimation(this);
+                } else if (!mScroller.isFinished()) {
+                    dispatchFling(mVelocityX, mVelocityY);
+                }
+            } else {
+                if (mCurrentOffset >= mHeaderHeight || mScroller.isFinished()) {
+                    mScroller.forceFinished(true);
+                } else if (isRefreshing && !mScroller.isFinished() && mScroller.computeScrollOffset()) {
+                    if (!mContent.canScrollVertically(DIRECTION_NEGATIVE)) {
+                        offsetChildren(Math.min(mHeaderHeight - mCurrentOffset, mScroller.getCurrY() - mLastFlingY));
+                    }
+                    mLastFlingY = mScroller.getCurrY();
+                    postOnAnimation(this);
+                }
             }
         }
 
-        private boolean isFinished() {
-            return mScroller.isFinished();
-        }
-
         private void stop() {
-            mScroller.forceFinished(true);
-            stopScroll();
+            if (mScroller != null) mScroller.forceFinished(true);
+            removeCallbacks(this);
         }
 
-        private void fling(int velocity) {
+        private boolean fling(int velocityX, int velocityY) {
+            mVelocityX = velocityX;
+            mVelocityY = velocityY;
             mLastFlingY = 0;
-            mScroller.fling(0, mLastFlingY, 0, velocity, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE);
-            postOnAnimation(this);
+            mScroller.fling(0, 0, mVelocityX, mVelocityY, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE);
+            int distance = Math.abs(mScroller.getFinalY());
+            if (mVelocityY < -mMinimumVelocity) {
+                if (mCurrentOffset > 0) {
+                    if (distance > mCurrentOffset || isRefreshing) {
+                        postOnAnimation(this);
+                    } else {
+                        mScroller.forceFinished(true);
+                        animateOffsetToStartPosition();
+                    }
+                    return true;
+                } else if (!isNestedEnabled && isOffset && mCurrentOffset == 0) {
+                    dispatchFling(mVelocityX, mVelocityY);
+                    return true;
+                }
+            } else if (mVelocityY > mMinimumVelocity) {
+                if (isRefreshing && distance > mContent.getScrollY()) {
+                    dispatchFling(mVelocityX, mVelocityY);
+                    postOnAnimation(this);
+                    return true;
+                }
+            }
+            return false;
         }
     }
+
+    private class AbsListViewFlingCompat {
+
+        private Field mFlingRunnableField;
+        private Constructor mFlingRunnableConstructor;
+        private Method mReportScrollStateChangeMethod;
+        private Method mStartMethod;
+
+        private AbsListViewFlingCompat() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) return;
+            try {
+                Class<?> absListViewClass = AbsListView.class;
+                mFlingRunnableField = absListViewClass.getDeclaredField("mFlingRunnable");
+                mFlingRunnableField.setAccessible(true);
+                mReportScrollStateChangeMethod = absListViewClass.getDeclaredMethod("reportScrollStateChange", Integer.TYPE);
+                mReportScrollStateChangeMethod.setAccessible(true);
+                Class<?> flingRunnableClass = mFlingRunnableField.getType();
+                mFlingRunnableConstructor = flingRunnableClass.getDeclaredConstructor(AbsListView.class);
+                mFlingRunnableConstructor.setAccessible(true);
+                mStartMethod = flingRunnableClass.getDeclaredMethod("start", Integer.TYPE);
+                mStartMethod.setAccessible(true);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
+        private void fling(AbsListView absListView, int velocity) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                absListView.fling(velocity);
+            } else {
+                try {
+                    Object flingRunnable = mFlingRunnableField.get(absListView);
+                    if (flingRunnable == null) {
+                        flingRunnable = mFlingRunnableConstructor.newInstance(absListView);
+                        mFlingRunnableField.set(absListView, flingRunnable);
+                    }
+                    mReportScrollStateChangeMethod.invoke(absListView, AbsListView.OnScrollListener.SCROLL_STATE_FLING);
+                    mStartMethod.invoke(flingRunnable, velocity);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
 }
