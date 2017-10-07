@@ -278,21 +278,13 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 initVelocityTrackIfNeeded();
-//                mFlingHelper.stop();
-//                if (isAnimating) {
-//                    clearAnimation();
-//                    super.dispatchTouchEvent(ev);
-//                    cancelClickEvent();
-//                    handled = true;
-//                }
                 break;
             case MotionEvent.ACTION_UP:
                 mVelocityTracker.addMovement(ev);
                 mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
-                int velocityX = (int) mVelocityTracker.getXVelocity();
                 int velocityY = (int) mVelocityTracker.getYVelocity();
                 recycleVelocityTrack();
-                handled = mFlingHelper.fling(velocityX, velocityY);
+                handled = mFlingHelper.fling(velocityY);
                 if (handled) resetTouch();
         }
         if (mVelocityTracker != null) {
@@ -331,8 +323,8 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                 if (pointerIndex < 0) break;
                 float y = ev.getY(pointerIndex);
                 int yDiff = (int) (y - mLastMotionY);
-                if (!isBeingDragged) {
-                    isBeingDragged = Math.abs(yDiff) >= mTouchSlop;
+                if (!isBeingDragged && Math.abs(yDiff) >= mTouchSlop) {
+                    isBeingDragged = true;
                     yDiff += yDiff > 0 ? -mTouchSlop : mTouchSlop;
                 }
                 if (!isBeingDragged) break;
@@ -375,7 +367,6 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             case MotionEvent.ACTION_UP:
                 mVelocityTracker.addMovement(ev);
                 mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
-                int velocityX = (int) mVelocityTracker.getXVelocity();
                 int velocityY = (int) mVelocityTracker.getYVelocity();
                 recycleVelocityTrack();
                 if (isBeingDragged) {
@@ -389,11 +380,12 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                         if (isRefreshing) animateOffsetToRefreshPosition();
                         else animateOffsetToStartPosition();
                         handled = true;
-                    } else if (mCurrentOffset > 0 && !isRefreshing) {
+                    } else if (!isRefreshing && mCurrentOffset > 0) {
                         animateOffsetToStartPosition();
                         handled = true;
                     } else {
-                        handled = mFlingHelper.fling(velocityX, velocityY);
+                        canRefresh = !isRefreshing && mCurrentOffset == 0;
+                        handled = mFlingHelper.fling(velocityY);
                     }
                 }
                 if (handled) resetTouch();
@@ -437,11 +429,12 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         mHeader.offsetTopAndBottom(offset);
         mContent.offsetTopAndBottom(offset);
         mCurrentOffset = mContent.getTop();
+        mHeader.bringToFront();
     }
 
-    private void dispatchFling(int velocityX, int velocityY) {
+    private void dispatchFling(int velocityY) {
         if (mContent instanceof RecyclerView) {
-            ((RecyclerView) mContent).fling(-velocityX, -velocityY);
+            ((RecyclerView) mContent).fling(0, -velocityY);
         } else if (mContent instanceof ScrollView) {
             ((ScrollView) mContent).fling(-velocityY);
         } else if (mContent instanceof NestedScrollView) {
@@ -454,7 +447,10 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     private void animateOffsetToStartPosition() {
         mStartOffset = mCurrentOffset;
         long duration = (long) Math.min((250.0f * Math.abs(mStartOffset) / mHeaderHeight), 250);
-        if (duration <= 0) return;
+        if (duration == 0) {
+            canRefresh = !isRefreshing && mCurrentOffset == 0;
+            return;
+        }
         mAnimateToStartPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToStartPosition);
@@ -464,7 +460,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         mStartOffset = mCurrentOffset;
         int distance = Math.abs(mStartOffset - mHeaderHeight);
         long duration = (long) Math.min((150.0f * distance / mHeaderHeight), 250);
-        if (duration <= 0) return;
+        if (duration == 0) return;
         mAnimateToRefreshPosition.setDuration(duration);
         clearAnimation();
         startAnimation(mAnimateToRefreshPosition);
@@ -553,6 +549,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         // because maybe content view will get a touch down event while flinging hasn't been completed
         mTotalUnconsumed = mCurrentOffset;
         isNestedScrolling = true;
+        isOffset = mCurrentOffset > 0;
     }
 
     @Override
@@ -590,6 +587,9 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             mTotalUnconsumed += offset;
             // make header visible
             offsetChildren(offset);
+            if (!isOffset) {
+                isOffset = true;
+            }
             if (canRefresh && mRefreshHeader != null) {
                 mRefreshHeader.onPull(mCurrentOffset >= mRefreshThreshold, mCurrentOffset);
             }
@@ -600,6 +600,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     public void onStopNestedScroll(View target) {
         mNestedScrollingParentHelper.onStopNestedScroll(target);
         isNestedScrolling = false;
+        isOffset = false;
         if (mCurrentOffset >= mRefreshThreshold) {
             if (canRefresh) {
                 isRefreshing = true;
@@ -609,8 +610,12 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             }
             if (isRefreshing) animateOffsetToRefreshPosition();
             else animateOffsetToStartPosition();
-        } else if (!isRefreshing && mCurrentOffset > 0) {
-            animateOffsetToStartPosition();
+        } else if (!isRefreshing) {
+            if (mCurrentOffset > 0)
+                animateOffsetToStartPosition();
+            else if (mCurrentOffset == 0) {
+                canRefresh = true;
+            }
         }
         stopNestedScroll();
     }
@@ -692,8 +697,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
 
     private class FlingHelper implements Runnable {
 
-        private int mVelocityX;
-        private int mVelocityY;
+        private int mVelocity;
         private int mLastFlingY;
 
         private FlingHelper() {
@@ -702,16 +706,15 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         @Override
         public void run() {
             // scroll down, dispatch fling after offsetting header to zero
-            if (mVelocityY < 0) {
+            if (mVelocity < 0) {
                 if (mScroller.computeScrollOffset() && mCurrentOffset > 0) {
                     int offset = Math.max(mScroller.getCurrY() - mLastFlingY, -mCurrentOffset);
                     offsetChildren(offset);
                     mLastFlingY = mScroller.getCurrY();
                     postOnAnimation(this);
                 } else if (!mScroller.isFinished()) {
+                    dispatchFling((int) -mScroller.getCurrVelocity());
                     mScroller.forceFinished(true);
-                    dispatchFling(mVelocityX, mVelocityY);
-
                 }
             } else {
                 // scroll up, if it is refreshing, make header visible after content view can't scroll up
@@ -732,13 +735,12 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
             removeCallbacks(this);
         }
 
-        private boolean fling(int velocityX, int velocityY) {
-            mVelocityX = velocityX;
-            mVelocityY = velocityY;
+        private boolean fling(int velocity) {
+            mVelocity = velocity;
             mLastFlingY = 0;
-            mScroller.fling(0, 0, mVelocityX, mVelocityY, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE);
+            mScroller.fling(0, 0, 0, mVelocity, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE);
             int distance = Math.abs(mScroller.getFinalY());
-            if (mVelocityY < -mMinimumVelocity) {
+            if (mVelocity < -mMinimumVelocity) {
                 if (mCurrentOffset > 0) {
                     if (distance > mCurrentOffset || isRefreshing) {
                         postOnAnimation(this);
@@ -749,12 +751,12 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                     return true;
                 } else if (!isNestedEnabled && isOffset && mCurrentOffset == 0) {
                     mScroller.forceFinished(true);
-                    dispatchFling(mVelocityX, mVelocityY);
+                    dispatchFling(mVelocity);
                     return true;
                 }
-            } else if (mVelocityY > mMinimumVelocity) {
+            } else if (mVelocity > mMinimumVelocity) {
                 if (isRefreshing && distance > mContent.getScrollY()) {
-                    dispatchFling(mVelocityX, mVelocityY);
+                    dispatchFling(mVelocity);
                     postOnAnimation(this);
                     return true;
                 }
