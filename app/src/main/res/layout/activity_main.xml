@@ -13,6 +13,14 @@
         android:text="recycler view" />
 
     <Button
+        android:id="@+id/nested_scroll_view_sample"
+        android:layout_width="180dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:padding="8dp"
+        android:text="nested scroll view" />
+
+    <Button
         android:id="@+id/list_view_sample"
         android:layout_width="180dp"
         android:layout_height="wrap_content"
@@ -27,14 +35,6 @@
         android:layout_marginTop="8dp"
         android:padding="8dp"
         android:text="grid view" />
-
-    <Button
-        android:id="@+id/nested_scroll_view_sample"
-        android:layout_width="180dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:padding="8dp"
-        android:text="nested scroll view" />
 
     <Button
         android:id="@+id/scroll_view_sample"
