@@ -428,7 +428,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     }
 
     private void offsetChildren(int offset) {
-        if (offset == 0) return;
+        if (offset == 0 || mCurrentOffset + offset < 0) return;
         mHeader.offsetTopAndBottom(offset);
         mContent.offsetTopAndBottom(offset);
         mCurrentOffset = mContent.getTop();
@@ -616,7 +616,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         } else if (!isRefreshing) {
             if (mCurrentOffset > 0)
                 animateOffsetToStartPosition();
-            else if (mCurrentOffset == 0) {
+            else {
                 canRefresh = true;
             }
         }
