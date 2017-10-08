@@ -23,7 +23,7 @@ public abstract class SampleActivity<T> extends AppCompatActivity {
                     public void run() {
                         refreshLayout.setRefreshing(false);
                     }
-                }, 10000);
+                }, 5000);
             }
         });
         bindView((T) findViewById(R.id.content_view));
