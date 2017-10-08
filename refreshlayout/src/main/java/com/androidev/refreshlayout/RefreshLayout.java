@@ -67,8 +67,8 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     private boolean isClickCanceled;
 
     private OverScroller mScroller;
-    private FlingHelper mFlingHelper;
     private Method mResetTouchMethod;
+    private FlingHelper mViewFlingHelper;
     private VelocityTracker mVelocityTracker;
     private AbsListViewCompat mAbsListViewCompat;
 
@@ -129,7 +129,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
 
     private void init(Context context) {
         canRefresh = true;
-        mFlingHelper = new FlingHelper();
+        mViewFlingHelper = new FlingHelper();
         ViewConfiguration configuration = ViewConfiguration.get(context);
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
         mTouchSlop = configuration.getScaledTouchSlop();
@@ -181,7 +181,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        mFlingHelper.stop();
+        mViewFlingHelper.stop();
     }
 
     @Override
@@ -278,13 +278,15 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 initVelocityTrackIfNeeded();
+                clearAnimation();
+                mViewFlingHelper.stop();
                 break;
             case MotionEvent.ACTION_UP:
                 mVelocityTracker.addMovement(ev);
                 mVelocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
                 int velocityY = (int) mVelocityTracker.getYVelocity();
                 recycleVelocityTrack();
-                handled = mFlingHelper.fling(velocityY);
+                handled = mViewFlingHelper.fling(velocityY);
                 if (handled) resetTouch();
         }
         if (mVelocityTracker != null) {
@@ -309,9 +311,10 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                 initVelocityTrackIfNeeded();
                 isOffset = false;
                 isClickCanceled = false;
-                isBeingDragged = isAnimating || !mScroller.isFinished();
+                isBeingDragged = isAnimating || !mViewFlingHelper.isFinished();
                 if (isBeingDragged) {
                     clearAnimation();
+                    mViewFlingHelper.stop();
                 }
                 mActivePointerId = ev.getPointerId(0);
                 pointerIndex = ev.findPointerIndex(mActivePointerId);
@@ -385,7 +388,7 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                         handled = true;
                     } else {
                         canRefresh = !isRefreshing && mCurrentOffset == 0;
-                        handled = mFlingHelper.fling(velocityY);
+                        handled = mViewFlingHelper.fling(velocityY);
                     }
                 }
                 if (handled) resetTouch();
@@ -728,6 +731,10 @@ public class RefreshLayout extends FrameLayout implements NestedScrollingParent,
                     postOnAnimation(this);
                 }
             }
+        }
+
+        private boolean isFinished() {
+            return mScroller.isFinished();
         }
 
         private void stop() {
